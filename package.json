@@ -13,7 +13,8 @@
     "test": "vitest run",
     "model": "node scripts/llama.ts",
     "mock": "node scripts/mock-llama-server.ts",
-    "probe:speed": "node scripts/probe-speed.ts"
+    "probe:speed": "node scripts/probe-speed.ts",
+    "probe:placeholders": "node scripts/probe-placeholders.ts"
   },
   "dependencies": {
     "react": "^19.3.1",

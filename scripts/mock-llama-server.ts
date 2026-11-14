@@ -19,11 +19,15 @@ const { values } = parseArgs({
     slots: { type: 'string', default: '4' },
     // 1 断片あたりの待ち時間(ミリ秒)。逐次表示の確認に使う。
     delay: { type: 'string', default: '5' },
+    // N を指定すると、N 件に 1 件の依頼で、訳文から最初の目印を 1 つ落とす。失敗時の表示の確認に使う。
+    'drop-every': { type: 'string', default: '0' },
   },
 })
 const port = Number(values.port)
 const slots = Number(values.slots)
 const delay = Number(values.delay)
+const dropEvery = Number(values['drop-every'])
+let completionCount = 0
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -75,7 +79,11 @@ const server = createServer((request, response) => {
       }
       if (request.method === 'POST' && request.url === '/completion') {
         const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { prompt?: string; n_predict?: number }
-        const translation = `【訳】${extractSource(body.prompt ?? '')}`
+        completionCount += 1
+        let translation = `【訳】${extractSource(body.prompt ?? '')}`
+        if (dropEvery > 0 && completionCount % dropEvery === 0) {
+          translation = translation.replace(/<m\d+>/, '')
+        }
         const pieces = chunksOf(translation, 8)
         const limit = body.n_predict ?? pieces.length
         const sent = pieces.slice(0, limit)
