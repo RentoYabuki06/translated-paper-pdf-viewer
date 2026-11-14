@@ -1,0 +1,16 @@
+:root {
+  color-scheme: light dark;
+  font-family:
+    'Hiragino Sans', 'Yu Gothic UI', 'Noto Sans JP', system-ui, sans-serif;
+  line-height: 1.7;
+}
+
+body {
+  margin: 0;
+}
+
+.app {
+  max-width: 48rem;
+  margin: 0 auto;
+  padding: 2rem 1rem;
+}

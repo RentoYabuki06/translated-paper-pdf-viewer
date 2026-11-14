@@ -1,0 +1,17 @@
+# 依存パッケージとビルド結果
+node_modules/
+dist/
+
+# 環境変数(秘密情報を含みうるため管理しない)
+.env
+.env.*
+!.env.local.example
+
+# モデルの重みと見本の PDF はリポジトリに含めない
+*.gguf
+*.onnx
+/samples/
+
+# OS とエディタの生成物
+.DS_Store
+*.log
