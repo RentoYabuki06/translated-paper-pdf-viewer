@@ -65,17 +65,8 @@ export function encodeSentence(sentence: MathSentence, format: PlaceholderFormat
   }
 }
 
-/**
- * 訳文中の目印の表記ゆれを直す。
- * 全角の山括弧とスラッシュを半角にし、目印の内側の空白を取り除き、英字を小文字にそろえる。
- */
-export function normalizeTags(text: string): string {
-  return text
-    .replace(/＜/g, '<')
-    .replace(/＞/g, '>')
-    .replace(/／/g, '/')
-    .replace(/<\s*(\/?)\s*m\s*(\d+)\s*>/gi, '<$1m$2>')
-}
+// 表記ゆれを直す処理は、アプリ本体と共通のものを使う。
+export { normalizeTags } from '../../src/math/placeholders.ts'
 
 export interface CheckResult {
   ok: boolean

@@ -363,3 +363,15 @@ footer {
     opacity: 1;
   }
 }
+
+/* 訳文の中に置く数式。元のページの描画を背景にして、数式の範囲だけを見せる。 */
+.math-sprite {
+  display: inline-block;
+  margin: 0 0.12em;
+  background-repeat: no-repeat;
+  text-indent: 0;
+}
+
+.translation-marker.kept {
+  outline: 1px dashed #c64600;
+}

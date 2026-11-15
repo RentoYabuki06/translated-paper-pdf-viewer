@@ -42,6 +42,11 @@ const CM_MATH_ROMAN_PATTERN = /^CM(R|BX)\d+$/i
 const MATH_SYMBOLS_PATTERN =
   /^[\sͰ-Ͽ←-⇿∀-⋿⟀-⟯⦀-⫿\u{1D400}-\u{1D7FF}=+<>×÷±∓−·]+$/u
 
+/** 数学記号、ギリシャ文字、演算子だけでできた文字列かどうか。 */
+export function isMathSymbols(text: string): boolean {
+  return text.trim().length > 0 && MATH_SYMBOLS_PATTERN.test(text)
+}
+
 export function isMathFontName(fontName: string): boolean {
   return MATH_FONT_PATTERN.test(stripSubsetPrefix(fontName))
 }

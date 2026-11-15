@@ -4,6 +4,7 @@
 
 import type { PDFPageProxy } from 'pdfjs-dist'
 import { dominantTextFont, markMath } from '../math/detect.ts'
+import type { GlyphInkMeasurer } from '../pdf/glyphInk.ts'
 import { extractRuns } from '../pdf/runs.ts'
 import { buildLines } from './lines.ts'
 import { buildParagraphs } from './paragraphs.ts'
@@ -17,8 +18,8 @@ export interface PageAnalysis {
   bodyFont: string
 }
 
-export async function analyzePage(page: PDFPageProxy): Promise<PageAnalysis> {
-  const rawRuns = await extractRuns(page)
+export async function analyzePage(page: PDFPageProxy, measureInk?: GlyphInkMeasurer): Promise<PageAnalysis> {
+  const rawRuns = await extractRuns(page, measureInk)
   const bodyFont = dominantTextFont(rawRuns)
   const runs = markMath(rawRuns, bodyFont)
   const lines = buildLines(runs)

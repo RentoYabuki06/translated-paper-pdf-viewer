@@ -2,11 +2,12 @@ import { describe, expect, it } from 'vitest'
 import type { Paragraph } from '../../src/analysis/types.ts'
 import { buildUnits } from '../../src/analysis/units.ts'
 import type { LayoutLabel, LayoutRegion } from '../../src/layout/types.ts'
-import { line } from './helpers.ts'
+import { lineWithChars } from './helpers.ts'
 
 /** 行間 12 ポイント、文字の大きさ 10 ポイントの段落を作る。 */
 function paragraph(text: string, x: number, y: number, width: number, lineCount = 1, mathRatio = 0): Paragraph {
-  const lines = Array.from({ length: lineCount }, (_, index) => line(text, x, y + 8 + index * 12, width))
+  // 文章は 1 行目に置き、2 行目以降は「…」とする。
+  const lines = Array.from({ length: lineCount }, (_, index) => lineWithChars(index === 0 ? text : '…', x, y + 8 + index * 12, width))
   return { text, x, y, width, height: 10 + (lineCount - 1) * 12, lines, fontSize: 10, mathRatio }
 }
 
@@ -30,7 +31,8 @@ describe('buildUnits', () => {
       id: 'p2-0',
       pageNumber: 2,
       index: 0,
-      source: 'Body text of the paper.',
+      source: 'Body text of the paper. … …',
+      math: [],
       kind: 'text',
       lineCount: 3,
       linePitch: 12,

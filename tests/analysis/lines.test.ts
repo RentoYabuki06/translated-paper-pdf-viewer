@@ -46,6 +46,27 @@ describe('buildLines', () => {
     expect(lines.map((line) => line.text)).toEqual(['text'])
   })
 
+  it('行の上下に離れて置かれた数式の部品を、もとの行に戻す', () => {
+    // 行の中の空き(x が 30 から 42)の下に、小さい数式の文字がある。分数の分母に当たる。
+    const denominator = run('dk', 32.5, 106, { fontSize: 7, isMath: true })
+    const lines = buildLines([run('factor', 0, 100), run('of the', 42, 100), denominator, run('next line of text', 0, 112)])
+    expect(lines.map((line) => line.text)).toEqual(['factor dk of the', 'next line of text'])
+    expect(lines[0]?.chars.filter((char) => char.satellite).map((char) => char.text)).toEqual(['d', 'k'])
+    // 行の文字の大きさと基準線は、戻した部品に引きずられない。
+    expect(lines[0]).toMatchObject({ fontSize: 10, baseline: 100 })
+    expect(lines[0]?.spans).toEqual([{ start: 6, end: 8 }])
+  })
+
+  it('単語の真下にある小さい文字は、行に戻さない', () => {
+    const lines = buildLines([run('factor of the', 0, 100), run('dk', 10, 106, { fontSize: 7, isMath: true })])
+    expect(lines).toHaveLength(2)
+  })
+
+  it('次の行の短い数式を、前の行に取り込まない', () => {
+    const lines = buildLines([run('where', 0, 100), run('x', 40, 100, { isMath: true }), run('=', 35, 112, { isMath: true })])
+    expect(lines).toHaveLength(2)
+  })
+
   it('数式の文字が占める割合を計算する', () => {
     const lines = buildLines([run('ab', 50, 100), run('xy', 60, 100, { isMath: true })])
     expect(lines[0]?.mathRatio).toBe(0.5)

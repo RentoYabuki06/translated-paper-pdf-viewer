@@ -1,10 +1,11 @@
 /**
  * 解析結果をページの上に重ねて見せる、確認用の表示。
- * 文字のまとまり、数式と判定した文字、行、段落の範囲と、レイアウト検出の領域を、枠で示す。
+ * 文字のまとまり、文中の数式、行、段落の範囲と、レイアウト検出の領域を、枠で示す。
  */
 
 import { useMemo } from 'react'
 import type { PageAnalysis } from '../analysis/analyzePage.ts'
+import { mathPartOf } from '../analysis/source.ts'
 import { actionFor, assignKind } from '../layout/assign.ts'
 import type { LayoutRegion } from '../layout/types.ts'
 
@@ -77,13 +78,28 @@ export function XRayLayer({ analysis, regions, width, height, options }: Props) 
           </rect>
         ))}
       {options.math &&
-        analysis.runs
-          .filter((run) => run.isMath)
-          .map((run, index) => (
-            <rect key={`m${index}`} className="xray-math" x={run.x} y={run.y} width={run.width} height={run.height}>
-              <title>{`${run.text}\n${run.fontName || '(フォント名なし)'} ${run.fontSize.toFixed(1)} pt`}</title>
-            </rect>
-          ))}
+        analysis.lines.flatMap((line, lineIndex) =>
+          line.spans.map((span, spanIndex) => {
+            // 範囲は、フォントの情報から決めたもの。訳文に置くときは、字形の実際の範囲で決め直す。
+            const part = mathPartOf(line, span)
+            const text = line.chars
+              .slice(span.start, span.end)
+              .map((char) => char.text)
+              .join('')
+            return (
+              <rect
+                key={`m${lineIndex}-${spanIndex}`}
+                className="xray-math"
+                x={part.x}
+                y={part.y}
+                width={part.width}
+                height={part.height}
+              >
+                <title>{text}</title>
+              </rect>
+            )
+          }),
+        )}
     </svg>
   )
 }

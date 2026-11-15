@@ -26,7 +26,7 @@ const XRAY_LABELS: { key: keyof XRayOptions; label: string }[] = [
   { key: 'paragraphs', label: '段落' },
   { key: 'lines', label: '行' },
   { key: 'runs', label: '文字のまとまり' },
-  { key: 'math', label: '数式の文字' },
+  { key: 'math', label: '文中の数式' },
   { key: 'regions', label: '検出した領域' },
 ]
 
@@ -47,7 +47,7 @@ const NO_PROGRESS: SessionProgress = {
   analyzedPages: 0,
   paragraphs: 0,
   lines: 0,
-  mathRuns: 0,
+  mathSpans: 0,
   detectTimes: [],
   translating: false,
   preparedPages: 0,
@@ -55,6 +55,8 @@ const NO_PROGRESS: SessionProgress = {
   done: 0,
   cached: 0,
   failed: 0,
+  kept: 0,
+  retried: 0,
   truncated: 0,
   requests: 0,
 }
@@ -241,7 +243,7 @@ export function PdfViewer() {
   )
   const times = progress.detectTimes
   const detector = detectorState.state === 'ready' ? detectorState.detector : null
-  const hasTranslations = progress.done > 0 || progress.failed > 0
+  const hasTranslations = progress.done > 0 || progress.failed > 0 || progress.kept > 0
 
   return (
     <div
@@ -326,8 +328,8 @@ export function PdfViewer() {
               文字を描かない描画を見る
             </label>
             <span className="status">
-              解析済み {progress.analyzedPages} ページ: 段落 {progress.paragraphs}、行 {progress.lines}
-              、数式の文字のまとまり {progress.mathRuns}
+              解析済み {progress.analyzedPages} ページ: 段落 {progress.paragraphs}、行 {progress.lines}、文中の数式{' '}
+              {progress.mathSpans}
             </span>
             <span className="toolbar-group">
               レイアウト検出:
@@ -407,7 +409,7 @@ export function PdfViewer() {
               {translationError && <span className="error">{translationError}</span>}
               {startingTranslation && !translationError && '翻訳の準備をしています…'}
               {(progress.translating || hasTranslations) &&
-                `${progress.translating ? '翻訳しています' : '翻訳が終わりました'}: ${progress.done} / ${progress.units} 段落(${progress.preparedPages} / ${opened.document.numPages} ページを準備済み、依頼 ${progress.requests} 件、保存分の再利用 ${progress.cached} 件、失敗 ${progress.failed} 件、途中で切れた訳文 ${progress.truncated} 件)`}
+                `${progress.translating ? '翻訳しています' : '翻訳が終わりました'}: ${progress.done + progress.kept} / ${progress.units} 段落(${progress.preparedPages} / ${opened.document.numPages} ページを準備済み、依頼 ${progress.requests} 件、保存分の再利用 ${progress.cached} 件、失敗 ${progress.failed} 件、途中で切れた訳文 ${progress.truncated} 件、文ごとに訳し直した段落 ${progress.retried} 件、数式の目印がそろわず原文のまま ${progress.kept} 件)`}
             </span>
           </section>
 

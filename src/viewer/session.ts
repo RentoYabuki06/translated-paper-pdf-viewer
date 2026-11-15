@@ -14,16 +14,28 @@ import type { TranslationUnit } from '../analysis/units.ts'
 import type { LayoutDetector } from '../layout/ortWebClient.ts'
 import { INPUT_SIZE } from '../layout/protocol.ts'
 import type { LayoutRegion } from '../layout/types.ts'
+import { checkTags, normalizeTags, tagIds } from '../math/placeholders.ts'
+import { createCanvasInkMeasurer } from '../pdf/glyphInk.ts'
+import type { GlyphInkMeasurer } from '../pdf/glyphInk.ts'
 import { renderPage } from '../pdf/render.ts'
 import type { BackendInfo, TranslateRequest, TranslatorBackend } from '../translate/backend.ts'
 import { cacheKey } from '../translate/cache.ts'
 import type { TranslationCache } from '../translate/cache.ts'
 import { pagePriority, PriorityQueue } from '../translate/queue.ts'
+import { translateTagged } from '../translate/tagged.ts'
 
 /** 1 つの翻訳単位の訳文の長さの上限(トークン数)。 */
 const MAX_TOKENS = 1024
 
-export type UnitStatus = 'waiting' | 'running' | 'done' | 'failed'
+/**
+ * 翻訳単位の状態。
+ * - waiting: 順番を待っている
+ * - running: 翻訳している
+ * - done: 訳文がある
+ * - failed: 依頼が失敗した
+ * - kept: 訳文の中の数式の目印がそろわなかったため、原文のまま残した
+ */
+export type UnitStatus = 'waiting' | 'running' | 'done' | 'failed' | 'kept'
 
 export interface UnitState {
   status: UnitStatus
@@ -33,6 +45,8 @@ export interface UnitState {
   fromCache: boolean
   /** 長さの上限に達して、訳文が途中で切れている場合に true。 */
   truncated: boolean
+  /** 文ごとに訳し直した場合に true。 */
+  retried?: boolean
   error?: string
 }
 
@@ -50,7 +64,8 @@ export interface SessionProgress {
   analyzedPages: number
   paragraphs: number
   lines: number
-  mathRuns: number
+  /** 文中の数式の数。 */
+  mathSpans: number
   /** ページごとの、レイアウト検出にかかった時間(ミリ秒)。 */
   detectTimes: readonly number[]
   /** 翻訳を依頼している最中(待っている単位がある)なら true。 */
@@ -62,6 +77,10 @@ export interface SessionProgress {
   /** done のうち、保存してあった訳文を使った数。 */
   cached: number
   failed: number
+  /** 数式の目印がそろわず、原文のまま残した数。 */
+  kept: number
+  /** done のうち、文ごとに訳し直して目印がそろった数。 */
+  retried: number
   truncated: number
   /** 今回の翻訳で、llama-server へ依頼した数。 */
   requests: number
@@ -83,8 +102,12 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+function requestForSource(source: string): TranslateRequest {
+  return { source, sourceLang: 'en', targetLang: 'ja', form: 'plain', maxTokens: MAX_TOKENS }
+}
+
 function requestFor(unit: TranslationUnit): TranslateRequest {
-  return { source: unit.source, sourceLang: 'en', targetLang: 'ja', form: 'plain', maxTokens: MAX_TOKENS }
+  return requestForSource(unit.source)
 }
 
 export class DocumentSession {
@@ -99,6 +122,8 @@ export class DocumentSession {
   private progress: SessionProgress | null = null
   private focusPage = 1
   private disposed = false
+  /** 字形の実際の範囲を測る関数。数式の範囲を決めるときに使う。 */
+  private readonly measureInk: GlyphInkMeasurer = createCanvasInkMeasurer()
 
   constructor(document: PDFDocumentProxy) {
     this.document = document
@@ -138,7 +163,7 @@ export class DocumentSession {
       analyzedPages: 0,
       paragraphs: 0,
       lines: 0,
-      mathRuns: 0,
+      mathSpans: 0,
       detectTimes: [...this.detectTimes.values()],
       translating: this.translation !== null && (!this.translation.prepared || this.translation.queue.size > 0),
       preparedPages: 0,
@@ -146,6 +171,8 @@ export class DocumentSession {
       done: 0,
       cached: 0,
       failed: 0,
+      kept: 0,
+      retried: 0,
       truncated: 0,
       requests: this.translation?.requests ?? 0,
     }
@@ -154,7 +181,7 @@ export class DocumentSession {
         progress.analyzedPages += 1
         progress.paragraphs += page.analysis.paragraphs.length
         progress.lines += page.analysis.lines.length
-        progress.mathRuns += page.analysis.runs.filter((run) => run.isMath).length
+        progress.mathSpans += page.analysis.lines.reduce((sum, line) => sum + line.spans.length, 0)
       }
       if (page.units) {
         progress.preparedPages += 1
@@ -165,8 +192,11 @@ export class DocumentSession {
           progress.done += 1
           if (state.fromCache) progress.cached += 1
           if (state.truncated) progress.truncated += 1
+          if (state.retried) progress.retried += 1
         } else if (state.status === 'failed') {
           progress.failed += 1
+        } else if (state.status === 'kept') {
+          progress.kept += 1
         }
       }
     }
@@ -184,7 +214,7 @@ export class DocumentSession {
     let promise = this.analysisPromises.get(pageNumber)
     if (!promise) {
       promise = this.document.getPage(pageNumber).then(async (page) => {
-        const analysis = await analyzePage(page)
+        const analysis = await analyzePage(page, this.measureInk)
         this.update(pageNumber, { analysis })
         return analysis
       })
@@ -238,7 +268,7 @@ export class DocumentSession {
         this.detectTimes.set(pageNumber, result.milliseconds)
         this.update(pageNumber, {
           regions: result.regions,
-          units: buildUnits(pageNumber, analysis.paragraphs, result.regions),
+          units: buildUnits(pageNumber, analysis.paragraphs, result.regions, this.measureInk),
         })
       })()
       promises.set(pageNumber, promise)
@@ -321,18 +351,49 @@ export class DocumentSession {
     translation.queue.add(fresh)
   }
 
+  /** 1 件の依頼を行い、目印の表記ゆれを直した訳文を返す。保存してある訳文があれば、依頼せずにそれを使う。 */
+  private async requestTranslation(
+    translation: ActiveTranslation,
+    source: string,
+    signal: AbortSignal,
+  ): Promise<{ text: string; truncated: boolean }> {
+    const request = requestForSource(source)
+    const key = await cacheKey(translation.modelId, request)
+    const saved = await translation.cache.get(key).catch(() => undefined)
+    if (saved) return { text: saved.text, truncated: false }
+
+    translation.requests += 1
+    this.emit()
+    const result = await translation.backend.translate(request, { signal })
+    const text = normalizeTags(result.text)
+    const truncated = result.stopReason === 'limit'
+    // 保存するのは、途中で切れておらず、目印がそろっている訳文だけ。
+    if (!truncated && text.length > 0 && checkTags(text, tagIds(source)).ok) {
+      await translation.cache.set(key, { text, savedAt: Date.now() }).catch(() => undefined)
+    }
+    return { text, truncated }
+  }
+
   private async translateUnit(translation: ActiveTranslation, unit: TranslationUnit, signal: AbortSignal): Promise<void> {
     if (signal.aborted) return
     this.updateUnit(unit, { status: 'running', text: '', fromCache: false, truncated: false })
-    translation.requests += 1
-    const request = requestFor(unit)
     try {
-      const result = await translation.backend.translate(request, { signal })
-      const truncated = result.stopReason === 'limit'
-      this.updateUnit(unit, { status: 'done', text: result.text, fromCache: false, truncated })
-      // 途中で切れた訳文は、保存しない。
-      if (!truncated && result.text.length > 0) {
-        const key = await cacheKey(translation.modelId, request)
+      // 訳文の中の数式の目印がそろわない場合は、文ごとに訳し直す(tagged.ts)。
+      const result = await translateTagged(unit.source, (source) => this.requestTranslation(translation, source, signal))
+      if (result.status === 'kept') {
+        this.updateUnit(unit, { status: 'kept', text: '', fromCache: false, truncated: false })
+        return
+      }
+      this.updateUnit(unit, {
+        status: 'done',
+        text: result.text,
+        fromCache: false,
+        truncated: result.truncated,
+        retried: result.retried,
+      })
+      if (result.retried) {
+        // つないだ訳文を、段落全体の依頼の結果として保存する。次に開いたときは、訳し直しをせずに使える。
+        const key = await cacheKey(translation.modelId, requestFor(unit))
         await translation.cache.set(key, { text: result.text, savedAt: Date.now() }).catch(() => undefined)
       }
     } catch (error) {
@@ -354,7 +415,7 @@ export class DocumentSession {
     // 待っていた翻訳単位を、原文の表示に戻す。
     for (const [pageNumber, page] of this.pages) {
       const kept = Object.fromEntries(
-        Object.entries(page.translations).filter(([, state]) => state.status === 'done' || state.status === 'failed'),
+        Object.entries(page.translations).filter(([, state]) => state.status !== 'waiting' && state.status !== 'running'),
       )
       this.pages.set(pageNumber, { ...page, translations: kept })
     }
