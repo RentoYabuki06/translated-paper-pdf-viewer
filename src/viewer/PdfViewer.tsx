@@ -7,6 +7,9 @@ import type { PDFDocumentProxy } from 'pdfjs-dist'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DragEvent, FormEvent } from 'react'
 import type { PageAnalysis } from '../analysis/analyzePage.ts'
+import { LayoutDetector, MODEL_BYTES } from '../layout/ortWebClient.ts'
+import type { LayoutBackend } from '../layout/types.ts'
+import { median } from '../lib/stats.ts'
 import { arxivPdfUrl, parseArxivId } from '../pdf/arxiv.ts'
 import { loadPdf } from '../pdf/pdfjs.ts'
 import { PageView } from './PageView.tsx'
@@ -20,6 +23,7 @@ const XRAY_LABELS: { key: keyof XRayOptions; label: string }[] = [
   { key: 'lines', label: '行' },
   { key: 'runs', label: '文字のまとまり' },
   { key: 'math', label: '数式の文字' },
+  { key: 'regions', label: '検出した領域' },
 ]
 
 interface Opened {
@@ -27,6 +31,12 @@ interface Opened {
   document: PDFDocumentProxy
   firstPageSize: PageSize
 }
+
+type DetectorState =
+  | { state: 'off' }
+  | { state: 'loading'; loaded: number; total: number }
+  | { state: 'ready'; detector: LayoutDetector }
+  | { state: 'error'; message: string }
 
 type Status = { state: 'idle' } | { state: 'loading'; message: string } | { state: 'error'; message: string }
 
@@ -40,15 +50,52 @@ export function PdfViewer() {
   const [arxivInput, setArxivInput] = useState('')
   const [scale, setScale] = useState(1.5)
   const [showWithoutText, setShowWithoutText] = useState(false)
-  const [xray, setXray] = useState<XRayOptions>({ paragraphs: true, lines: false, runs: false, math: true })
+  const [xray, setXray] = useState<XRayOptions>({
+    paragraphs: true,
+    lines: false,
+    runs: false,
+    math: true,
+    regions: false,
+  })
   const [dragging, setDragging] = useState(false)
   const [counts, setCounts] = useState<Record<number, { paragraphs: number; lines: number; math: number }>>({})
+  const [backend, setBackend] = useState<LayoutBackend>('webgpu')
+  const [detectorState, setDetectorState] = useState<DetectorState>({ state: 'off' })
+  /** ページごとの、レイアウト検出にかかった時間(ミリ秒)。 */
+  const [detectTimes, setDetectTimes] = useState<Record<number, number>>({})
+  const detectorRef = useRef<LayoutDetector | null>(null)
   /** 開く操作の通し番号。あとから始めた操作だけを画面に反映するために使う。 */
   const openSequence = useRef(0)
   const openedRef = useRef<Opened | null>(null)
 
   // 画面を閉じるときに、開いている PDF を解放する。
   useEffect(() => () => void openedRef.current?.document.loadingTask.destroy(), [])
+  useEffect(() => () => detectorRef.current?.dispose(), [])
+
+  /** レイアウト検出を有効にする。初回は、モデルのファイルを取得する。 */
+  async function enableDetector(): Promise<void> {
+    detectorRef.current?.dispose()
+    detectorRef.current = null
+    setDetectTimes({})
+    setDetectorState({ state: 'loading', loaded: 0, total: MODEL_BYTES })
+    try {
+      const detector = await LayoutDetector.create(backend, (loaded, total) =>
+        setDetectorState({ state: 'loading', loaded, total }),
+      )
+      detectorRef.current = detector
+      setDetectorState({ state: 'ready', detector })
+      setXray((current) => ({ ...current, regions: true }))
+    } catch (error) {
+      setDetectorState({ state: 'error', message: messageOf(error) })
+    }
+  }
+
+  function disableDetector(): void {
+    detectorRef.current?.dispose()
+    detectorRef.current = null
+    setDetectTimes({})
+    setDetectorState({ state: 'off' })
+  }
 
   const openData = useCallback(async (name: string, getData: () => Promise<ArrayBuffer>, loadingMessage: string) => {
     const sequence = ++openSequence.current
@@ -66,6 +113,7 @@ export function PdfViewer() {
       const next = { name, document, firstPageSize: { width: viewport.width, height: viewport.height } }
       openedRef.current = next
       setCounts({})
+      setDetectTimes({})
       setOpened(next)
       setStatus({ state: 'idle' })
     } catch (error) {
@@ -132,6 +180,13 @@ export function PdfViewer() {
       },
     }))
   }, [])
+
+  const onDetected = useCallback((pageNumber: number, milliseconds: number) => {
+    setDetectTimes((current) => ({ ...current, [pageNumber]: milliseconds }))
+  }, [])
+
+  const times = Object.values(detectTimes)
+  const detector = detectorState.state === 'ready' ? detectorState.detector : null
 
   const analyzedPages = Object.keys(counts).length
   const totals = Object.values(counts).reduce(
@@ -229,6 +284,41 @@ export function PdfViewer() {
               解析済み {analyzedPages} ページ: 段落 {totals.paragraphs}、行 {totals.lines}、数式の文字のまとまり{' '}
               {totals.math}
             </span>
+            <span className="toolbar-group">
+              レイアウト検出:
+              <label>
+                実行の方法{' '}
+                <select
+                  value={backend}
+                  onChange={(event) => setBackend(event.target.value as LayoutBackend)}
+                  disabled={detectorState.state === 'loading' || detectorState.state === 'ready'}
+                >
+                  <option value="webgpu">WebGPU</option>
+                  <option value="wasm">WebAssembly</option>
+                </select>
+              </label>
+              {detectorState.state === 'ready' ? (
+                <button type="button" onClick={disableDetector}>
+                  無効にする
+                </button>
+              ) : (
+                <button type="button" onClick={() => void enableDetector()} disabled={detectorState.state === 'loading'}>
+                  有効にする(初回は約 130 MB を取得)
+                </button>
+              )}
+            </span>
+            <span className="status" role="status">
+              {detectorState.state === 'loading' &&
+                (detectorState.loaded > 0
+                  ? `モデルを取得しています… ${Math.round((detectorState.loaded / detectorState.total) * 100)}%`
+                  : 'モデルを読み込んでいます…')}
+              {detectorState.state === 'error' && <span className="error">{detectorState.message}</span>}
+              {detectorState.state === 'ready' &&
+                `${detectorState.detector.info.backend === 'webgpu' ? 'WebGPU' : `WebAssembly(${detectorState.detector.info.threads} スレッド)`}で検出します。` +
+                  (times.length > 0
+                    ? `検出済み ${times.length} ページ: 中央値 ${Math.round(median(times))} ミリ秒、最大 ${Math.round(Math.max(...times))} ミリ秒`
+                    : '')}
+            </span>
           </section>
 
           <div className="pages">
@@ -243,6 +333,8 @@ export function PdfViewer() {
                 showWithoutText={showWithoutText}
                 xray={xray}
                 onAnalyzed={onAnalyzed}
+                detector={detector}
+                onDetected={onDetected}
               />
             ))}
           </div>

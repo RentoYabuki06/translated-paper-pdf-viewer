@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { MATH_SENTENCES } from '../../scripts/data/mathSentences.ts'
 import { buildParagraphs, fillTemplate, plainSentence } from '../../scripts/lib/paragraphs.ts'
-import { median, sum } from '../../scripts/lib/stats.ts'
+import { median, sum } from '../../src/lib/stats.ts'
 
 describe('MATH_SENTENCES(実験用の文のデータ)', () => {
   it('60 件ある', () => {

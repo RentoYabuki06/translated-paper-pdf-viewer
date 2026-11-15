@@ -6,6 +6,8 @@ import type { PDFDocumentProxy, RenderTask } from 'pdfjs-dist'
 import { useEffect, useRef, useState } from 'react'
 import { analyzePage } from '../analysis/analyzePage.ts'
 import type { PageAnalysis } from '../analysis/analyzePage.ts'
+import type { LayoutDetector } from '../layout/ortWebClient.ts'
+import type { LayoutRegion } from '../layout/types.ts'
 import { renderPage } from '../pdf/render.ts'
 import { XRayLayer } from './XRayLayer.tsx'
 import type { XRayOptions } from './XRayLayer.tsx'
@@ -25,13 +27,26 @@ interface Props {
   showWithoutText: boolean
   xray: XRayOptions
   onAnalyzed: (pageNumber: number, analysis: PageAnalysis) => void
+  /** レイアウト検出器。有効にしていない間は null。 */
+  detector: LayoutDetector | null
+  onDetected: (pageNumber: number, milliseconds: number) => void
 }
 
 function isCancelled(error: unknown): boolean {
   return error instanceof Error && error.name === 'RenderingCancelledException'
 }
 
-export function PageView({ document, pageNumber, scale, estimatedSize, showWithoutText, xray, onAnalyzed }: Props) {
+export function PageView({
+  document,
+  pageNumber,
+  scale,
+  estimatedSize,
+  showWithoutText,
+  xray,
+  onAnalyzed,
+  detector,
+  onDetected,
+}: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const normalCanvasRef = useRef<HTMLCanvasElement>(null)
   const textlessCanvasRef = useRef<HTMLCanvasElement>(null)
@@ -39,6 +54,9 @@ export function PageView({ document, pageNumber, scale, estimatedSize, showWitho
   const [size, setSize] = useState<PageSize>(estimatedSize)
   const [analysis, setAnalysis] = useState<PageAnalysis | null>(null)
   const [error, setError] = useState<string | null>(null)
+  /** 通常の描画が終わっているかどうか。レイアウト検出は、描画済みの画像を入力にする。 */
+  const [rendered, setRendered] = useState(false)
+  const [regions, setRegions] = useState<LayoutRegion[] | null>(null)
 
   // 表示範囲の上下 1 画面分まで近づいたら、描画の対象にする。一度対象になったら、そのままにする。
   useEffect(() => {
@@ -76,6 +94,7 @@ export function PageView({ document, pageNumber, scale, estimatedSize, showWitho
         if (!canvas || cancelled) return
         task = renderPage(page, canvas, { scale, withoutText })
         await task.promise
+        if (!withoutText && !cancelled) setRendered(true)
       }
       if (cancelled) return
 
@@ -92,8 +111,38 @@ export function PageView({ document, pageNumber, scale, estimatedSize, showWitho
     return () => {
       cancelled = true
       task?.cancel()
+      setRendered(false)
     }
   }, [document, pageNumber, scale, near, onAnalyzed])
+
+  // レイアウト検出は、検出器ごとに、ページにつき 1 回だけ行う。結果はページの座標なので、倍率を変えても使える。
+  const detectedWith = useRef<LayoutDetector | null>(null)
+  useEffect(() => {
+    if (!detector) {
+      detectedWith.current = null
+      setRegions(null)
+      return
+    }
+    const canvas = normalCanvasRef.current
+    if (!rendered || !canvas || detectedWith.current === detector) return
+    detectedWith.current = detector
+    let cancelled = false
+    detector
+      .detect(canvas, size.width, size.height)
+      .then((result) => {
+        if (cancelled) return
+        setRegions(result.regions)
+        onDetected(pageNumber, result.milliseconds)
+      })
+      .catch((cause: unknown) => {
+        if (cancelled) return
+        detectedWith.current = null
+        setError(`レイアウト検出に失敗しました: ${cause instanceof Error ? cause.message : String(cause)}`)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [detector, rendered, size, pageNumber, onDetected])
 
   return (
     <div
@@ -104,7 +153,9 @@ export function PageView({ document, pageNumber, scale, estimatedSize, showWitho
     >
       <canvas ref={normalCanvasRef} hidden={showWithoutText} />
       <canvas ref={textlessCanvasRef} hidden={!showWithoutText} />
-      {analysis && <XRayLayer analysis={analysis} width={size.width} height={size.height} options={xray} />}
+      {analysis && (
+        <XRayLayer analysis={analysis} regions={regions} width={size.width} height={size.height} options={xray} />
+      )}
       {error && <p className="page-error error">{`${pageNumber} ページ目を表示できません: ${error}`}</p>}
     </div>
   )

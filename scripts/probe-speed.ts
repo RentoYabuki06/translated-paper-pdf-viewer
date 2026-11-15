@@ -17,7 +17,7 @@ import { MATH_SENTENCES } from './data/mathSentences.ts'
 import { parsePositiveInteger, runMain } from './lib/cli.ts'
 import { buildParagraphs } from './lib/paragraphs.ts'
 import { mapWithConcurrency } from '../src/lib/pool.ts'
-import { median, sum } from './lib/stats.ts'
+import { median, sum } from '../src/lib/stats.ts'
 
 interface Row {
   concurrency: number

@@ -24,7 +24,7 @@ import {
   type PlaceholderFormat,
 } from './lib/placeholderFormats.ts'
 import { mapWithConcurrency } from '../src/lib/pool.ts'
-import { sum } from './lib/stats.ts'
+import { sum } from '../src/lib/stats.ts'
 
 interface Outcome {
   source: string

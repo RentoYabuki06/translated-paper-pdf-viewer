@@ -243,3 +243,29 @@ footer {
   stroke: #e66100;
   stroke-width: 0.5;
 }
+
+.toolbar button {
+  padding: 0.15rem 0.5rem;
+}
+
+/* レイアウト検出の結果があるページでは、訳す段落を青の実線、訳さない段落を灰色の破線で示す。 */
+.xray-paragraph.keep {
+  stroke: #77767b;
+  stroke-dasharray: 4 3;
+}
+
+.xray-region rect {
+  stroke: #9141ac;
+  stroke-width: 1;
+  fill: rgb(145 65 172 / 0.06);
+  pointer-events: none;
+}
+
+.xray-region text {
+  fill: #9141ac;
+  font-weight: 600;
+  paint-order: stroke;
+  stroke: #fff;
+  stroke-width: 2;
+  pointer-events: none;
+}
