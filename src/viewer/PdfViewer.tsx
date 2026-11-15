@@ -4,16 +4,20 @@
  */
 
 import type { PDFDocumentProxy } from 'pdfjs-dist'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { DragEvent, FormEvent } from 'react'
-import type { PageAnalysis } from '../analysis/analyzePage.ts'
 import { LayoutDetector, MODEL_BYTES } from '../layout/ortWebClient.ts'
 import type { LayoutBackend } from '../layout/types.ts'
 import { median } from '../lib/stats.ts'
 import { arxivPdfUrl, parseArxivId } from '../pdf/arxiv.ts'
 import { loadPdf } from '../pdf/pdfjs.ts'
+import { openTranslationCache } from '../translate/cache.ts'
+import { LlamaServerBackend } from '../translate/llamaServer.ts'
+import { loadServerUrl, saveServerUrl } from '../translate/serverUrl.ts'
 import { PageView } from './PageView.tsx'
 import type { PageSize } from './PageView.tsx'
+import { DocumentSession } from './session.ts'
+import type { SessionProgress } from './session.ts'
 import type { XRayOptions } from './XRayLayer.tsx'
 
 const SCALES = [1, 1.25, 1.5, 2]
@@ -29,6 +33,7 @@ const XRAY_LABELS: { key: keyof XRayOptions; label: string }[] = [
 interface Opened {
   name: string
   document: PDFDocumentProxy
+  session: DocumentSession
   firstPageSize: PageSize
 }
 
@@ -37,6 +42,25 @@ type DetectorState =
   | { state: 'loading'; loaded: number; total: number }
   | { state: 'ready'; detector: LayoutDetector }
   | { state: 'error'; message: string }
+
+const NO_PROGRESS: SessionProgress = {
+  analyzedPages: 0,
+  paragraphs: 0,
+  lines: 0,
+  mathRuns: 0,
+  detectTimes: [],
+  translating: false,
+  preparedPages: 0,
+  units: 0,
+  done: 0,
+  cached: 0,
+  failed: 0,
+  truncated: 0,
+  requests: 0,
+}
+
+const noSubscription = () => () => undefined
+const noProgress = () => NO_PROGRESS
 
 type Status = { state: 'idle' } | { state: 'loading'; message: string } | { state: 'error'; message: string }
 
@@ -58,43 +82,82 @@ export function PdfViewer() {
     regions: false,
   })
   const [dragging, setDragging] = useState(false)
-  const [counts, setCounts] = useState<Record<number, { paragraphs: number; lines: number; math: number }>>({})
   const [backend, setBackend] = useState<LayoutBackend>('webgpu')
   const [detectorState, setDetectorState] = useState<DetectorState>({ state: 'off' })
-  /** ページごとの、レイアウト検出にかかった時間(ミリ秒)。 */
-  const [detectTimes, setDetectTimes] = useState<Record<number, number>>({})
+  const [serverUrl, setServerUrl] = useState(loadServerUrl)
+  const [showTranslations, setShowTranslations] = useState(true)
+  const [translationError, setTranslationError] = useState<string | null>(null)
+  /** 翻訳を始める準備(接続の確認やモデルの読み込み)をしている間は true。 */
+  const [startingTranslation, setStartingTranslation] = useState(false)
   const detectorRef = useRef<LayoutDetector | null>(null)
   /** 開く操作の通し番号。あとから始めた操作だけを画面に反映するために使う。 */
   const openSequence = useRef(0)
   const openedRef = useRef<Opened | null>(null)
 
   // 画面を閉じるときに、開いている PDF を解放する。
-  useEffect(() => () => void openedRef.current?.document.loadingTask.destroy(), [])
+  useEffect(
+    () => () => {
+      openedRef.current?.session.dispose()
+      void openedRef.current?.document.loadingTask.destroy()
+    },
+    [],
+  )
   useEffect(() => () => detectorRef.current?.dispose(), [])
 
-  /** レイアウト検出を有効にする。初回は、モデルのファイルを取得する。 */
-  async function enableDetector(): Promise<void> {
+  /** レイアウト検出を有効にする。初回は、モデルのファイルを取得する。失敗した場合は null を返す。 */
+  async function enableDetector(): Promise<LayoutDetector | null> {
+    openedRef.current?.session.setDetector(null)
     detectorRef.current?.dispose()
     detectorRef.current = null
-    setDetectTimes({})
     setDetectorState({ state: 'loading', loaded: 0, total: MODEL_BYTES })
     try {
       const detector = await LayoutDetector.create(backend, (loaded, total) =>
         setDetectorState({ state: 'loading', loaded, total }),
       )
       detectorRef.current = detector
+      openedRef.current?.session.setDetector(detector)
       setDetectorState({ state: 'ready', detector })
-      setXray((current) => ({ ...current, regions: true }))
+      return detector
     } catch (error) {
       setDetectorState({ state: 'error', message: messageOf(error) })
+      return null
     }
   }
 
   function disableDetector(): void {
+    openedRef.current?.session.setDetector(null)
     detectorRef.current?.dispose()
     detectorRef.current = null
-    setDetectTimes({})
     setDetectorState({ state: 'off' })
+  }
+
+  /**
+   * 開いている PDF の翻訳を始める。
+   * 訳す段落を決めるためにレイアウト検出が要るので、有効になっていなければ先に有効にする。
+   */
+  async function startTranslation(): Promise<void> {
+    const session = openedRef.current?.session
+    if (!session) return
+    setTranslationError(null)
+    setStartingTranslation(true)
+    try {
+      saveServerUrl(serverUrl)
+      const translator = new LlamaServerBackend({ baseUrl: serverUrl })
+      const info = await translator.info()
+      const detector = detectorRef.current ?? (await enableDetector())
+      if (!detector) return
+      const cache = await openTranslationCache()
+      // 準備の間に、別の PDF を開いた場合は始めない。
+      if (openedRef.current?.session !== session) return
+      // 訳文を読みやすくするため、確認用の枠を消す。
+      setXray({ paragraphs: false, lines: false, runs: false, math: false, regions: false })
+      setShowTranslations(true)
+      session.startTranslation(translator, info, cache)
+    } catch (error) {
+      setTranslationError(messageOf(error))
+    } finally {
+      setStartingTranslation(false)
+    }
   }
 
   const openData = useCallback(async (name: string, getData: () => Promise<ArrayBuffer>, loadingMessage: string) => {
@@ -109,11 +172,13 @@ export function PdfViewer() {
         void document.loadingTask.destroy()
         return
       }
+      openedRef.current?.session.dispose()
       void openedRef.current?.document.loadingTask.destroy()
-      const next = { name, document, firstPageSize: { width: viewport.width, height: viewport.height } }
+      const session = new DocumentSession(document)
+      session.setDetector(detectorRef.current)
+      const next = { name, document, session, firstPageSize: { width: viewport.width, height: viewport.height } }
       openedRef.current = next
-      setCounts({})
-      setDetectTimes({})
+      setTranslationError(null)
       setOpened(next)
       setStatus({ state: 'idle' })
     } catch (error) {
@@ -170,33 +235,13 @@ export function PdfViewer() {
     if (file) void openFile(file)
   }
 
-  const onAnalyzed = useCallback((pageNumber: number, analysis: PageAnalysis) => {
-    setCounts((current) => ({
-      ...current,
-      [pageNumber]: {
-        paragraphs: analysis.paragraphs.length,
-        lines: analysis.lines.length,
-        math: analysis.runs.filter((run) => run.isMath).length,
-      },
-    }))
-  }, [])
-
-  const onDetected = useCallback((pageNumber: number, milliseconds: number) => {
-    setDetectTimes((current) => ({ ...current, [pageNumber]: milliseconds }))
-  }, [])
-
-  const times = Object.values(detectTimes)
-  const detector = detectorState.state === 'ready' ? detectorState.detector : null
-
-  const analyzedPages = Object.keys(counts).length
-  const totals = Object.values(counts).reduce(
-    (sum, page) => ({
-      paragraphs: sum.paragraphs + page.paragraphs,
-      lines: sum.lines + page.lines,
-      math: sum.math + page.math,
-    }),
-    { paragraphs: 0, lines: 0, math: 0 },
+  const progress = useSyncExternalStore(
+    opened ? opened.session.subscribe : noSubscription,
+    opened ? opened.session.getProgress : noProgress,
   )
+  const times = progress.detectTimes
+  const detector = detectorState.state === 'ready' ? detectorState.detector : null
+  const hasTranslations = progress.done > 0 || progress.failed > 0
 
   return (
     <div
@@ -281,8 +326,8 @@ export function PdfViewer() {
               文字を描かない描画を見る
             </label>
             <span className="status">
-              解析済み {analyzedPages} ページ: 段落 {totals.paragraphs}、行 {totals.lines}、数式の文字のまとまり{' '}
-              {totals.math}
+              解析済み {progress.analyzedPages} ページ: 段落 {progress.paragraphs}、行 {progress.lines}
+              、数式の文字のまとまり {progress.mathRuns}
             </span>
             <span className="toolbar-group">
               レイアウト検出:
@@ -302,7 +347,15 @@ export function PdfViewer() {
                   無効にする
                 </button>
               ) : (
-                <button type="button" onClick={() => void enableDetector()} disabled={detectorState.state === 'loading'}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void enableDetector().then((created) => {
+                      if (created) setXray((current) => ({ ...current, regions: true }))
+                    })
+                  }}
+                  disabled={detectorState.state === 'loading'}
+                >
                   有効にする(初回は約 130 MB を取得)
                 </button>
               )}
@@ -319,6 +372,43 @@ export function PdfViewer() {
                     ? `検出済み ${times.length} ページ: 中央値 ${Math.round(median(times))} ミリ秒、最大 ${Math.round(Math.max(...times))} ミリ秒`
                     : '')}
             </span>
+            <span className="toolbar-group">
+              翻訳:
+              <input
+                type="url"
+                className="server-url"
+                value={serverUrl}
+                onChange={(event) => setServerUrl(event.target.value)}
+                disabled={progress.translating || startingTranslation}
+                aria-label="llama-server の URL"
+                spellCheck={false}
+              />
+              {progress.translating ? (
+                <button type="button" onClick={() => opened.session.stopTranslation()}>
+                  中止
+                </button>
+              ) : (
+                <button type="button" className="primary" onClick={() => void startTranslation()} disabled={startingTranslation}>
+                  この PDF を翻訳する
+                </button>
+              )}
+              {hasTranslations && (
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={showTranslations}
+                    onChange={(event) => setShowTranslations(event.target.checked)}
+                  />
+                  訳文を表示
+                </label>
+              )}
+            </span>
+            <span className="status" role="status">
+              {translationError && <span className="error">{translationError}</span>}
+              {startingTranslation && !translationError && '翻訳の準備をしています…'}
+              {(progress.translating || hasTranslations) &&
+                `${progress.translating ? '翻訳しています' : '翻訳が終わりました'}: ${progress.done} / ${progress.units} 段落(${progress.preparedPages} / ${opened.document.numPages} ページを準備済み、依頼 ${progress.requests} 件、保存分の再利用 ${progress.cached} 件、失敗 ${progress.failed} 件、途中で切れた訳文 ${progress.truncated} 件)`}
+            </span>
           </section>
 
           <div className="pages">
@@ -326,15 +416,14 @@ export function PdfViewer() {
               <PageView
                 // PDF を開き直したときに、前の PDF の描画や解析結果を引き継がない。
                 key={`${opened.document.fingerprints[0] ?? opened.name}-${index + 1}`}
-                document={opened.document}
+                session={opened.session}
                 pageNumber={index + 1}
                 scale={scale}
                 estimatedSize={opened.firstPageSize}
                 showWithoutText={showWithoutText}
+                showTranslations={showTranslations}
+                detectorEnabled={detector !== null}
                 xray={xray}
-                onAnalyzed={onAnalyzed}
-                detector={detector}
-                onDetected={onDetected}
               />
             ))}
           </div>

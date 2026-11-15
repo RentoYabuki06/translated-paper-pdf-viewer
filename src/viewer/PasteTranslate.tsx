@@ -1,11 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { mapWithConcurrency } from '../lib/pool.ts'
 import type { BackendInfo, StopReason } from '../translate/backend.ts'
-import { DEFAULT_LLAMA_SERVER_URL, LlamaServerBackend } from '../translate/llamaServer.ts'
+import { LlamaServerBackend } from '../translate/llamaServer.ts'
+import { loadServerUrl, saveServerUrl } from '../translate/serverUrl.ts'
 import { splitParagraphs } from '../translate/splitParagraphs.ts'
-
-/** llama-server の URL を、ブラウザに覚えさせておくときの名前。 */
-const SERVER_URL_STORAGE_KEY = 'llamaServerUrl'
 
 /** 1 段落の訳文の長さの上限(トークン数)。実験用のコマンドと同じ値。 */
 const MAX_TOKENS = 1024
@@ -38,22 +36,6 @@ type Connection =
 interface Summary {
   seconds: number
   outputTokens: number
-}
-
-function loadServerUrl(): string {
-  try {
-    return localStorage.getItem(SERVER_URL_STORAGE_KEY) ?? DEFAULT_LLAMA_SERVER_URL
-  } catch {
-    return DEFAULT_LLAMA_SERVER_URL
-  }
-}
-
-function saveServerUrl(url: string): void {
-  try {
-    localStorage.setItem(SERVER_URL_STORAGE_KEY, url)
-  } catch {
-    // 保存できない場合(プライベートウィンドウなど)は、今回の入力だけを使う。
-  }
 }
 
 function messageOf(error: unknown): string {

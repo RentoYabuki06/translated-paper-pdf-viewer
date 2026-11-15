@@ -269,3 +269,97 @@ footer {
   stroke-width: 2;
   pointer-events: none;
 }
+
+.toolbar .server-url {
+  flex: none;
+  width: 13rem;
+  min-width: 0;
+  padding: 0.15rem 0.4rem;
+}
+
+/* 訳文の層。中の座標はページのポイントで、層全体を倍率に合わせて拡大縮小する。 */
+.translation-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  pointer-events: none;
+}
+
+.translation,
+.translation-marker {
+  position: absolute;
+  box-sizing: border-box;
+  pointer-events: auto;
+}
+
+.translation {
+  overflow: hidden;
+  color: #111;
+  font-family: 'Hiragino Mincho ProN', 'Yu Mincho', 'Noto Serif JP', serif;
+  text-align: justify;
+  line-break: strict;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.translation.doc_title,
+.translation.paragraph_title {
+  font-family: 'Hiragino Sans', 'Yu Gothic', 'Noto Sans JP', sans-serif;
+  font-weight: 700;
+  text-align: left;
+}
+
+/* 収まらなかった訳文は末尾を隠し、右下に印を付ける。マウスを重ねると全文を見せる。 */
+.translation.clipped::after {
+  content: '…';
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  padding: 0 0.3em;
+  background: #fff3c4;
+  color: #8a5a00;
+  font-weight: 700;
+}
+
+.translation.clipped:hover {
+  z-index: 1;
+  max-height: none !important;
+  background: #fff;
+  box-shadow: 0 0 0 2px #fff, 0 1px 6px 2px rgb(0 0 0 / 0.25);
+}
+
+.translation.clipped:hover::after {
+  content: none;
+}
+
+.translation.truncated {
+  box-shadow: inset -2px 0 0 #c01c28;
+}
+
+.translation-marker.original {
+  cursor: pointer;
+}
+
+.translation-marker.original:hover {
+  outline: 1px dashed #1a5fb4;
+}
+
+.translation-marker.running {
+  background: rgb(26 95 180 / 0.1);
+  animation: translating 1.2s ease-in-out infinite alternate;
+}
+
+.translation-marker.failed {
+  outline: 1px solid #c01c28;
+  background: rgb(192 28 40 / 0.06);
+}
+
+@keyframes translating {
+  from {
+    opacity: 0.3;
+  }
+  to {
+    opacity: 1;
+  }
+}

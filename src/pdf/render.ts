@@ -18,6 +18,8 @@ export interface RenderOptions {
   scale: number
   /** true のとき、文字を描く命令を飛ばす。図、罫線、背景の色は描かれる。 */
   withoutText?: boolean
+  /** canvas の画素数を決める倍率。省略すると、画面の解像度(devicePixelRatio)を使う。 */
+  outputScale?: number
 }
 
 /**
@@ -25,7 +27,7 @@ export interface RenderOptions {
  * 表示上の大きさ(CSS)は、呼び出し側で決める。
  */
 export function renderPage(page: PDFPageProxy, canvas: HTMLCanvasElement, options: RenderOptions): RenderTask {
-  const outputScale = globalThis.devicePixelRatio || 1
+  const outputScale = options.outputScale ?? (globalThis.devicePixelRatio || 1)
   const viewport = page.getViewport({ scale: options.scale * outputScale })
   canvas.width = Math.floor(viewport.width)
   canvas.height = Math.floor(viewport.height)

@@ -48,6 +48,16 @@ describe('buildParagraphs', () => {
     expect(paragraphs.map((paragraph) => paragraph.text)).toEqual(['left 1 left 2', 'right 1 right 2'])
   })
 
+  it('幅いっぱいの行の次の、字下げされた幅いっぱいの行で、段落を分ける', () => {
+    const paragraphs = buildParagraphs([
+      line('a full width line of the paragraph', 50, 100, 236),
+      line('the last line is also full width.', 50, 112, 236),
+      line('Indented full width first line', 60, 124, 226),
+      line('of the next paragraph.', 50, 136, 120),
+    ])
+    expect(paragraphs.map((paragraph) => paragraph.lines.length)).toEqual([2, 2])
+  })
+
   it('中央ぞろえの行を、1 つの段落にする', () => {
     const paragraphs = buildParagraphs([line('A Long Title of the Paper', 100, 100, 300, 14), line('Second Line', 190, 117, 120, 14)])
     expect(paragraphs).toHaveLength(1)

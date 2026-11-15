@@ -1,14 +1,16 @@
 /**
  * 1 ページ分の表示。表示範囲に近づいたときに、描画と解析を行う。
+ *
+ * 層は、下から順に、通常の描画、文字を描かない描画、訳文、解析結果の確認用の枠。
+ * 文字を描かない描画は、訳文を表示している段落の範囲だけを見せる。
+ * こうすると、元の文字だけが消え、背景の色や罫線は残る。
  */
 
-import type { PDFDocumentProxy, RenderTask } from 'pdfjs-dist'
-import { useEffect, useRef, useState } from 'react'
-import { analyzePage } from '../analysis/analyzePage.ts'
-import type { PageAnalysis } from '../analysis/analyzePage.ts'
-import type { LayoutDetector } from '../layout/ortWebClient.ts'
-import type { LayoutRegion } from '../layout/types.ts'
+import type { RenderTask } from 'pdfjs-dist'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { renderPage } from '../pdf/render.ts'
+import type { DocumentSession } from './session.ts'
+import { coverClipPath, TranslationLayer } from './TranslationLayer.tsx'
 import { XRayLayer } from './XRayLayer.tsx'
 import type { XRayOptions } from './XRayLayer.tsx'
 
@@ -18,70 +20,90 @@ export interface PageSize {
 }
 
 interface Props {
-  document: PDFDocumentProxy
+  session: DocumentSession
   pageNumber: number
   scale: number
   /** ページを読み込む前に、場所を確保するための大きさ(ポイント)。 */
   estimatedSize: PageSize
   /** true のとき、通常の描画の代わりに、文字を描かない描画を見せる。 */
   showWithoutText: boolean
+  /** false のとき、訳文を隠して原文を見せる。 */
+  showTranslations: boolean
+  /** レイアウト検出が有効かどうか。有効になったら、表示中のページを検出にかける。 */
+  detectorEnabled: boolean
   xray: XRayOptions
-  onAnalyzed: (pageNumber: number, analysis: PageAnalysis) => void
-  /** レイアウト検出器。有効にしていない間は null。 */
-  detector: LayoutDetector | null
-  onDetected: (pageNumber: number, milliseconds: number) => void
 }
 
 function isCancelled(error: unknown): boolean {
   return error instanceof Error && error.name === 'RenderingCancelledException'
 }
 
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+const NO_ORIGINALS: ReadonlySet<string> = new Set()
+
 export function PageView({
-  document,
+  session,
   pageNumber,
   scale,
   estimatedSize,
   showWithoutText,
+  showTranslations,
+  detectorEnabled,
   xray,
-  onAnalyzed,
-  detector,
-  onDetected,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const normalCanvasRef = useRef<HTMLCanvasElement>(null)
   const textlessCanvasRef = useRef<HTMLCanvasElement>(null)
   const [near, setNear] = useState(false)
   const [size, setSize] = useState<PageSize>(estimatedSize)
-  const [analysis, setAnalysis] = useState<PageAnalysis | null>(null)
   const [error, setError] = useState<string | null>(null)
-  /** 通常の描画が終わっているかどうか。レイアウト検出は、描画済みの画像を入力にする。 */
-  const [rendered, setRendered] = useState(false)
-  const [regions, setRegions] = useState<LayoutRegion[] | null>(null)
+  /** 原文の表示に切り替えている翻訳単位の名前。 */
+  const [originals, setOriginals] = useState<ReadonlySet<string>>(NO_ORIGINALS)
 
-  // 表示範囲の上下 1 画面分まで近づいたら、描画の対象にする。一度対象になったら、そのままにする。
+  const state = useSyncExternalStore(
+    session.subscribe,
+    useCallback(() => session.getPage(pageNumber), [session, pageNumber]),
+  )
+
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
-    const observer = new IntersectionObserver(
+    // 表示範囲の上下 1 画面分まで近づいたら、描画の対象にする。一度対象になったら、そのままにする。
+    const nearObserver = new IntersectionObserver(
       (entries) => {
         if (entries.some((entry) => entry.isIntersecting)) {
           setNear(true)
-          observer.disconnect()
+          nearObserver.disconnect()
         }
       },
       { rootMargin: '100% 0px' },
     )
-    observer.observe(container)
-    return () => observer.disconnect()
-  }, [])
+    // 画面の中央の高さにかかっているページを、表示中のページとして伝える。翻訳の順番に使う。
+    const focusObserver = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) session.setFocusPage(pageNumber)
+      },
+      { rootMargin: '-50% 0px -50% 0px' },
+    )
+    nearObserver.observe(container)
+    focusObserver.observe(container)
+    return () => {
+      nearObserver.disconnect()
+      focusObserver.disconnect()
+    }
+  }, [session, pageNumber])
 
+  // 描画。倍率を変えたら描き直す。
   useEffect(() => {
     if (!near) return
     let cancelled = false
     let task: RenderTask | undefined
 
     async function run(): Promise<void> {
-      const page = await document.getPage(pageNumber)
+      const page = await session.document.getPage(pageNumber)
       if (cancelled) return
       const viewport = page.getViewport({ scale: 1 })
       setSize({ width: viewport.width, height: viewport.height })
@@ -94,55 +116,44 @@ export function PageView({
         if (!canvas || cancelled) return
         task = renderPage(page, canvas, { scale, withoutText })
         await task.promise
-        if (!withoutText && !cancelled) setRendered(true)
       }
-      if (cancelled) return
-
-      const result = await analyzePage(page)
-      if (cancelled) return
-      setAnalysis(result)
-      onAnalyzed(pageNumber, result)
     }
 
     run().catch((cause: unknown) => {
-      if (!cancelled && !isCancelled(cause)) setError(cause instanceof Error ? cause.message : String(cause))
+      if (!cancelled && !isCancelled(cause)) setError(messageOf(cause))
     })
-
     return () => {
       cancelled = true
       task?.cancel()
-      setRendered(false)
     }
-  }, [document, pageNumber, scale, near, onAnalyzed])
+  }, [session, pageNumber, scale, near])
 
-  // レイアウト検出は、検出器ごとに、ページにつき 1 回だけ行う。結果はページの座標なので、倍率を変えても使える。
-  const detectedWith = useRef<LayoutDetector | null>(null)
+  // 解析と、レイアウト検出。結果は session が持ち、ページにつき 1 回だけ行われる。
   useEffect(() => {
-    if (!detector) {
-      detectedWith.current = null
-      setRegions(null)
-      return
-    }
-    const canvas = normalCanvasRef.current
-    if (!rendered || !canvas || detectedWith.current === detector) return
-    detectedWith.current = detector
+    if (!near) return
     let cancelled = false
-    detector
-      .detect(canvas, size.width, size.height)
-      .then((result) => {
-        if (cancelled) return
-        setRegions(result.regions)
-        onDetected(pageNumber, result.milliseconds)
-      })
-      .catch((cause: unknown) => {
-        if (cancelled) return
-        detectedWith.current = null
-        setError(`レイアウト検出に失敗しました: ${cause instanceof Error ? cause.message : String(cause)}`)
-      })
+    const work = detectorEnabled ? session.ensureLayout(pageNumber) : session.ensureAnalysis(pageNumber)
+    work.catch((cause: unknown) => {
+      if (!cancelled) setError(`解析に失敗しました: ${messageOf(cause)}`)
+    })
     return () => {
       cancelled = true
     }
-  }, [detector, rendered, size, pageNumber, onDetected])
+  }, [session, pageNumber, near, detectorEnabled])
+
+  const onToggle = useCallback((unitId: string) => {
+    setOriginals((current) => {
+      const next = new Set(current)
+      if (!next.delete(unitId)) next.add(unitId)
+      return next
+    })
+  }, [])
+
+  const units = state.units
+  const clipPath = useMemo(
+    () => (units && showTranslations ? coverClipPath(units, state.translations, originals, scale) : null),
+    [units, state.translations, originals, scale, showTranslations],
+  )
 
   return (
     <div
@@ -152,11 +163,32 @@ export function PageView({
       data-page-number={pageNumber}
     >
       <canvas ref={normalCanvasRef} hidden={showWithoutText} />
-      <canvas ref={textlessCanvasRef} hidden={!showWithoutText} />
-      {analysis && (
-        <XRayLayer analysis={analysis} regions={regions} width={size.width} height={size.height} options={xray} />
+      <canvas
+        ref={textlessCanvasRef}
+        hidden={!showWithoutText && clipPath === null}
+        style={showWithoutText || clipPath === null ? undefined : { clipPath }}
+      />
+      {units && showTranslations && !showWithoutText && (
+        <TranslationLayer
+          units={units}
+          translations={state.translations}
+          width={size.width}
+          height={size.height}
+          scale={scale}
+          originals={originals}
+          onToggle={onToggle}
+        />
       )}
-      {error && <p className="page-error error">{`${pageNumber} ページ目を表示できません: ${error}`}</p>}
+      {state.analysis && (
+        <XRayLayer
+          analysis={state.analysis}
+          regions={state.regions}
+          width={size.width}
+          height={size.height}
+          options={xray}
+        />
+      )}
+      {error && <p className="page-error error">{`${pageNumber} ページ目: ${error}`}</p>}
     </div>
   )
 }
