@@ -16,7 +16,7 @@ import { DEFAULT_LLAMA_SERVER_URL, LlamaServerBackend } from '../src/translate/l
 import { MATH_SENTENCES } from './data/mathSentences.ts'
 import { parsePositiveInteger, runMain } from './lib/cli.ts'
 import { buildParagraphs } from './lib/paragraphs.ts'
-import { mapWithConcurrency } from './lib/pool.ts'
+import { mapWithConcurrency } from '../src/lib/pool.ts'
 import { median, sum } from './lib/stats.ts'
 
 interface Row {

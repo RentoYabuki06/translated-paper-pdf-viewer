@@ -23,7 +23,7 @@ import {
   PLACEHOLDER_FORMATS,
   type PlaceholderFormat,
 } from './lib/placeholderFormats.ts'
-import { mapWithConcurrency } from './lib/pool.ts'
+import { mapWithConcurrency } from '../src/lib/pool.ts'
 import { sum } from './lib/stats.ts'
 
 interface Outcome {
