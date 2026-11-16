@@ -108,6 +108,7 @@ function TranslationBox({ unit, index, state, images, requestImage, pageWidth, p
       data-fit={layout.kind}
       data-unit={unit.id}
       data-fragment={`${index + 1}/${unit.fragments.length}`}
+      data-retried={state.retried ? 'true' : undefined}
       title="クリックで原文を表示"
       onClick={() => onToggle(unit.id)}
       style={{

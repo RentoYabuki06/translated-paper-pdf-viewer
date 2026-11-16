@@ -67,7 +67,8 @@ export function layoutUnit(unit: TranslationUnit, text: string): UnitLayout {
   const cached = perUnit.get(text)
   if (cached) return cached
 
-  const atoms = buildAtoms(text, unit.math)
+  // 節の見出しの番号は、訳文の前に、そのまま付ける。
+  const atoms = buildAtoms(unit.prefix ? `${unit.prefix} ${text}` : text, unit.math)
   const html = atoms.map((atom) => atomHtml(atom, unit.fontSize))
   const element = getMeasurer()
   element.className = `translation ${unit.kind}`

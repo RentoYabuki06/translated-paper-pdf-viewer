@@ -19,6 +19,7 @@ function unit(id: string, source: string, options: Options = {}): TranslationUni
     index: 0,
     order: y,
     source,
+    prefix: '',
     math: [],
     kind: 'text',
     fontSize: 10,

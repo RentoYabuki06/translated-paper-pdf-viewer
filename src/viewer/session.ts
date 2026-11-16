@@ -27,6 +27,7 @@ import { renderPage } from '../pdf/render.ts'
 import type { BackendInfo, TranslateRequest, TranslatorBackend } from '../translate/backend.ts'
 import { cacheKey } from '../translate/cache.ts'
 import type { TranslationCache } from '../translate/cache.ts'
+import { buildContexts } from '../translate/context.ts'
 import { pagePriority, PriorityQueue } from '../translate/queue.ts'
 import { translateTagged } from '../translate/tagged.ts'
 
@@ -126,12 +127,11 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-function requestForSource(source: string): TranslateRequest {
-  return { source, sourceLang: 'en', targetLang: 'ja', form: 'plain', maxTokens: MAX_TOKENS }
-}
-
-function requestFor(unit: TranslationUnit): TranslateRequest {
-  return requestForSource(unit.source)
+/** 翻訳の依頼を作る。context は、参考情報として渡す文脈(題名、節の見出し、直前の段落)。 */
+function requestForSource(source: string, context: string | undefined): TranslateRequest {
+  const request: TranslateRequest = { source, sourceLang: 'en', targetLang: 'ja', form: 'plain', maxTokens: MAX_TOKENS }
+  if (context !== undefined) request.context = context
+  return request
 }
 
 /**
@@ -157,6 +157,10 @@ export class DocumentSession {
   private linked = new Map<number, TranslationUnit[]>()
   /** 翻訳単位の名前(id)ごとの、翻訳の状態。 */
   private unitStates = new Map<string, UnitState>()
+  /** 翻訳単位の名前(id)ごとの、依頼に付ける文脈。 */
+  private contexts = new Map<string, string>()
+  /** 論文の題名。1 ページ目の準備が終わるまでは null。題名が見つからなければ空文字列。 */
+  private title: string | null = null
   private detector: LayoutDetector | null = null
   private translation: ActiveTranslation | null = null
   private progress: SessionProgress | null = null
@@ -292,6 +296,8 @@ export class DocumentSession {
     this.detectTimes = new Map()
     this.linked = new Map()
     this.unitStates = new Map()
+    this.contexts = new Map()
+    this.title = null
     for (const [pageNumber, page] of this.pages) {
       this.pages.set(pageNumber, { ...page, regions: null, rawUnits: null, fragments: [], translations: {} })
     }
@@ -343,7 +349,11 @@ export class DocumentSession {
     const next = pageNumber < lastPage ? this.getPage(pageNumber + 1).rawUnits : null
     if (!raw || (pageNumber > 1 && !previous) || (pageNumber < lastPage && !next)) return false
 
-    this.linked.set(pageNumber, linkPage(previous, raw, next).units)
+    const units = linkPage(previous, raw, next).units
+    this.linked.set(pageNumber, units)
+    for (const [id, context] of buildContexts({ title: this.title ?? '', previousPage: previous, page: raw, units })) {
+      this.contexts.set(id, context)
+    }
     // このページから始まる翻訳単位は、このページと次のページに断片を持つ。
     this.rebuildFragments(pageNumber)
     this.rebuildFragments(pageNumber + 1)
@@ -402,6 +412,13 @@ export class DocumentSession {
    * 前後のページがそろって翻訳単位が確定したページから、順番待ちに入れる。
    */
   private async prepareAll(translation: ActiveTranslation): Promise<void> {
+    // 題名は、すべての依頼の文脈に入る。どのページから翻訳を始めても同じ文脈になるよう、最初に 1 ページ目を準備する。
+    if (this.title === null) {
+      await this.ensureLayout(1).catch(() => undefined)
+      if (this.translation !== translation) return
+      const first = this.getPage(1).rawUnits?.find((unit) => unit.kind === 'doc_title')
+      this.title = first?.source ?? ''
+    }
     const remaining = new Set(Array.from({ length: this.document.numPages }, (_, index) => index + 1))
     while (remaining.size > 0 && this.translation === translation) {
       let next = 0
@@ -439,7 +456,7 @@ export class DocumentSession {
     const fresh: TranslationUnit[] = []
     for (const unit of this.linked.get(pageNumber) ?? []) {
       if (this.unitStates.get(unit.id)?.status === 'done') continue
-      const key = await cacheKey(translation.modelId, requestFor(unit))
+      const key = await cacheKey(translation.modelId, this.requestFor(unit))
       const saved = await translation.cache.get(key).catch(() => undefined)
       if (this.translation !== translation) return
       if (saved) {
@@ -452,13 +469,19 @@ export class DocumentSession {
     translation.queue.add(fresh)
   }
 
+  /** 翻訳単位の全体を訳す依頼を作る。 */
+  private requestFor(unit: TranslationUnit): TranslateRequest {
+    return requestForSource(unit.source, this.contexts.get(unit.id))
+  }
+
   /** 1 件の依頼を行い、目印の表記ゆれを直した訳文を返す。保存してある訳文があれば、依頼せずにそれを使う。 */
   private async requestTranslation(
     translation: ActiveTranslation,
     source: string,
+    context: string | undefined,
     signal: AbortSignal,
   ): Promise<{ text: string; truncated: boolean }> {
-    const request = requestForSource(source)
+    const request = requestForSource(source, context)
     const key = await cacheKey(translation.modelId, request)
     const saved = await translation.cache.get(key).catch(() => undefined)
     if (saved) return { text: saved.text, truncated: false }
@@ -479,8 +502,9 @@ export class DocumentSession {
     if (signal.aborted) return
     this.updateUnit(unit, { status: 'running', text: '', fromCache: false, truncated: false })
     try {
-      // 訳文の中の数式の目印がそろわない場合は、文ごとに訳し直す(tagged.ts)。
-      const result = await translateTagged(unit.source, (source) => this.requestTranslation(translation, source, signal))
+      // 訳文の中の数式の目印がそろわない場合は、文ごとに訳し直す(tagged.ts)。文ごとの依頼にも、同じ文脈を付ける。
+      const context = this.contexts.get(unit.id)
+      const result = await translateTagged(unit.source, (source) => this.requestTranslation(translation, source, context, signal))
       if (result.status === 'kept') {
         this.updateUnit(unit, { status: 'kept', text: '', fromCache: false, truncated: false })
         return
@@ -494,7 +518,7 @@ export class DocumentSession {
       })
       if (result.retried) {
         // つないだ訳文を、段落全体の依頼の結果として保存する。次に開いたときは、訳し直しをせずに使える。
-        const key = await cacheKey(translation.modelId, requestFor(unit))
+        const key = await cacheKey(translation.modelId, this.requestFor(unit))
         await translation.cache.set(key, { text: result.text, savedAt: Date.now() }).catch(() => undefined)
       }
     } catch (error) {

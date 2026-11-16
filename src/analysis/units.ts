@@ -39,6 +39,11 @@ export interface TranslationUnit {
   order: number
   /** 訳す原文。文中の数式は、目印(<m1> など)に置き換えてある。 */
   source: string
+  /**
+   * 訳さずに、訳文の前にそのまま付ける文字列。節の見出しの番号("3.2" や "A." など)が入る。無ければ空文字列。
+   * 番号を付けたまま訳すと、"6 Results" が「6 件の結果」のように、番号が個数として訳されることがある。
+   */
+  prefix: string
   /** 文中の数式。目印の番号の順に並ぶ。 */
   math: MathSlot[]
   kind: ParagraphKind
@@ -68,6 +73,22 @@ const SAME_COLUMN_EM = 2.5
 const COLUMN_EDGE_EM = 0.5
 /** 最後の行が段の右端まで届いているとみなす、右端との差の上限。文字の大きさに対する倍率。 */
 const FULL_LINE_EM = 2
+
+/**
+ * 節の見出しの先頭にある番号。"3"、"3.2.1"、"1."、"A."、"A.1" などの形。
+ * 英字 1 文字の番号は、冠詞の "A" と区別するため、ピリオドが付いている場合に限る。
+ */
+const HEADING_NUMBER = /^((?:\d+(?:\.\d+)*\.?|[A-Z]\.(?:\d+(?:\.\d+)*\.?)?))\s+(?=\S)/
+
+/**
+ * 節の見出しを、番号と、それ以外に分ける。番号が無い場合と、番号を除くと語が残らない場合は、分けない。
+ */
+export function splitHeadingNumber(text: string): { prefix: string; rest: string } {
+  const match = HEADING_NUMBER.exec(text)
+  if (!match) return { prefix: '', rest: text }
+  const rest = text.slice(match[0].length)
+  return /[A-Za-z]{2}/.test(rest.replace(/<m\d+>/g, '')) ? { prefix: match[1] as string, rest } : { prefix: '', rest: text }
+}
 
 /** 訳文の箱を広げるときに、避ける領域の種類。文字を持たない図や、枠で囲まれた要素。 */
 const BLOCK_LABELS: ReadonlySet<LayoutLabel> = new Set<LayoutLabel>([
@@ -203,13 +224,17 @@ export function buildUnits(
         : paragraph.fontSize * DEFAULT_PITCH_EM
     const second = lines[1]
 
+    // 節の見出しの番号は、訳さずに、訳文の前に付け直す。
+    const heading = kind === 'paragraph_title' ? splitHeadingNumber(source.text) : { prefix: '', rest: source.text }
+
     units.push({
       id: `p${pageNumber}-${index}`,
       pageNumber,
       index,
       // 同じ領域に入った段落は、上から順にする。
       order: (assignments[index]?.region?.order ?? 0) * 10_000 + paragraph.y,
-      source: source.text,
+      source: heading.rest,
+      prefix: heading.prefix,
       math: source.slots,
       kind,
       fontSize: paragraph.fontSize,

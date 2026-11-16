@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Paragraph } from '../../src/analysis/types.ts'
-import { buildUnits } from '../../src/analysis/units.ts'
+import { buildUnits, splitHeadingNumber } from '../../src/analysis/units.ts'
 import type { TranslationUnit } from '../../src/analysis/units.ts'
 import type { LayoutLabel, LayoutRegion } from '../../src/layout/types.ts'
 import { lineWithChars } from './helpers.ts'
@@ -162,11 +162,39 @@ describe('buildUnits', () => {
     expect(byId(units, 'p1-2').lastLineFull).toBe(false)
   })
 
+  it('節の見出しの番号を、原文から外して、prefix に入れる', () => {
+    const heading = paragraph('6 Results', 50, 100, 60)
+    const body = paragraph('3 models are compared here.', 50, 130, 200, 2)
+    const units = buildUnits(1, [heading, body], [cover('paragraph_title', heading), cover('text', body)])
+    expect(byId(units, 'p1-0')).toMatchObject({ source: 'Results', prefix: '6' })
+    // 本文は、数で始まっていても、そのままにする。
+    expect(byId(units, 'p1-1')).toMatchObject({ source: '3 models are compared here. …', prefix: '' })
+  })
+
   it('1 行目の字下げを記録する', () => {
     const indented = paragraph('Indented paragraph text here.', 50, 100, 200, 3)
     const firstLine = indented.lines[0]
     if (firstLine) firstLine.x = 65
     const units = buildUnits(1, [indented], [cover('text', indented)])
     expect(units[0]?.fragments[0]?.indented).toBe(true)
+  })
+})
+
+describe('splitHeadingNumber', () => {
+  it.each([
+    ['6 Results', '6', 'Results'],
+    ['3.2.1 Scaled Dot-Product Attention', '3.2.1', 'Scaled Dot-Product Attention'],
+    ['1. Introduction', '1.', 'Introduction'],
+    ['A. Object Detection Baselines', 'A.', 'Object Detection Baselines'],
+    ['A.1 Training Details', 'A.1', 'Training Details'],
+  ])('%s を、番号とそれ以外に分ける', (text, prefix, rest) => {
+    expect(splitHeadingNumber(text)).toEqual({ prefix, rest })
+  })
+
+  it.each(['Abstract', 'A Method for Translation', 'PASCAL VOC', '2015 in Review of 3 Models', '3.2'])('%s は、分けない', (text) => {
+    // "2015 in Review …" は、先頭の数が番号とは限らないが、形の上では番号と区別できない。分けた結果を確かめておく。
+    const result = splitHeadingNumber(text)
+    if (text.startsWith('2015')) expect(result).toEqual({ prefix: '2015', rest: 'in Review of 3 Models' })
+    else expect(result).toEqual({ prefix: '', rest: text })
   })
 })
