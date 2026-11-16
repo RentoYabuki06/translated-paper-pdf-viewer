@@ -7,6 +7,7 @@
  * llama-server 版との違い:
  * - 同時に処理できる依頼の数を、Ollama は応答で知らせない。利用者が指定した数を使う。
  * - llama-server の起動時に渡している位置符号化の補正(note/004_llama-launcher.md)を、渡す手段が無い。
+ *   そのため、一部の入力で、訳文が llama-server のものと変わる(note/021_probe-backends.md)。
  */
 
 import type {
@@ -154,6 +155,7 @@ export class OllamaBackend implements TranslatorBackend {
         repeat_penalty: 1,
         seed: 0,
         // 訳文の終わりの印が文字として出てきた場合に備えて、停止文字列にも指定する。
+        // 指定しなくても、Ollama は終了トークンで生成を止める(note/022_ollama-plamo-check.md)。
         stop: [...PFML3_END_MARKERS],
       },
     }

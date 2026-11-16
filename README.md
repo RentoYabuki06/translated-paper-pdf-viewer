@@ -53,8 +53,8 @@ llama-server は、コマンド `npm run model` で起動します。
 | 区分 | 内容 |
 | --- | --- |
 | 実装してあるもの | llama-server を起動するコマンド、llama-server へ翻訳を依頼する処理、Ollama へ翻訳を依頼する処理、翻訳サーバーの設定と接続の状態を確かめる画面、PDF を開いて解析結果を確かめる画面、レイアウト検出、PDF の翻訳と訳文の重ね表示、文中の数式を元の見た目のまま訳文に入れる処理、段やページをまたいで続く段落をつなぐ処理、題名や直前の段落を文脈として渡す処理、訳文の保存、貼り付けた英文を訳す画面、実験用のコマンド 4 つ(`npm run probe:speed`、`npm run probe:placeholders`、`npm run probe:context`、`npm run probe:backends`)、単体テスト |
-| 動くことを確かめたもの | 「セットアップ」の手順 1 から手順 5(手順 1 と手順 2、単体テスト、ビルド、模擬サーバーを使う手順は、新しく複製した状態からも確かめました)、arXiv の論文 2 本(1 段組と 2 段組)での PDF の表示、レイアウト検出、翻訳、訳文の重ね表示、文中の数式の表示、段やページをまたぐ段落の結合、開き直したときの訳文の再利用、翻訳の中止、本文が Computer Modern の論文 1 本での文中の数式の表示(1 ページ分)、翻訳サーバーの設定の画面(llama-server への接続、接続できない場合の表示、Ollama との通信)、単体テスト、ビルド、**模擬サーバー**と実物の llama-server に対する実験用のコマンド、`npm run model -- --dry-run` |
-| 確かめていないこと | PLaMo 3 Translate を Ollama で動かすこと(Ollama との通信は、別のモデルで確かめました)、既定の `2b`・Q4_K_M 以外のモデルでの動作、8080 番のポートでの llama-server の起動(開発に使っているパソコンでは別のソフトが 8080 番を使っているため、8081 番で確かめました)、メモリの使用量、出版社版の PDF での表示、ファイルの選択とドラッグ&ドロップで PDF を開く操作、`npm run build` で作ったファイルでのレイアウト検出と翻訳 |
+| 動くことを確かめたもの | 「セットアップ」の手順 1 から手順 5(手順 1 と手順 2、単体テスト、ビルド、模擬サーバーを使う手順は、新しく複製した状態からも確かめました)、arXiv の論文 2 本(1 段組と 2 段組)での PDF の表示、レイアウト検出、翻訳、訳文の重ね表示、文中の数式の表示、段やページをまたぐ段落の結合、開き直したときの訳文の再利用、翻訳の中止、本文が Computer Modern の論文 1 本での文中の数式の表示(1 ページ分)、翻訳サーバーの設定の画面(llama-server と Ollama への接続、接続できない場合の表示)、Ollama での PLaMo 3 Translate の動作(モデルの取り込み、貼り付けた英文の翻訳、同じ論文 2 本の PDF の翻訳)、単体テスト、ビルド、**模擬サーバー**と実物の llama-server に対する実験用のコマンド、`npm run model -- --dry-run` |
+| 確かめていないこと | 既定の `2b`・Q4_K_M 以外のモデルでの動作、Ollama の側で同時に処理する数を増やした場合の動作、8080 番のポートでの llama-server の起動(開発に使っているパソコンでは別のソフトが 8080 番を使っているため、8081 番で確かめました)、メモリの使用量、出版社版の PDF での表示、ファイルの選択とドラッグ&ドロップで PDF を開く操作、`npm run build` で作ったファイルでのレイアウト検出と翻訳 |
 | まだ無いもの | 訳語を固定する手段(用語集)、保存した訳文を消す操作 |
 
 実験用のコマンドは、生成の速度(モデルが訳文を出力する速さ)などを測り、結果をターミナル(コマンドを入力して実行するアプリ)に表示するものです。
@@ -231,19 +231,72 @@ Web アプリの「翻訳サーバー」の画面で、翻訳を依頼するソ�
 
 Ollama は、言語モデルを動かす別のソフトです。
 すでに Ollama を使っている場合は、llama-server の代わりに、Ollama に翻訳を依頼できます。
+ただし、このアプリが主に対応している依頼先は、llama-server です。
+Ollama では、一部の段落の訳文が llama-server のものと変わり、PDF の翻訳にかかる時間も長くなります(下の「llama-server との違い」)。
+
+#### モデルを Ollama に入れる
+
+Ollama は、手元にあるモデルのファイルを取り込めます[Ollama 説明書 (2026/11), import, Importing a GGUF model]。
+「セットアップ」の手順 4 で llama-server が取得したファイルを取り込む場合は、次の 2 つのコマンドを実行します。
+
+```bash
+echo "FROM $(ls ~/.cache/huggingface/hub/models--pfnet--plamo-3-translate-2b-GGUF/snapshots/*/plamo-3-translate-2b-Q4_K_M.gguf)" > Modelfile
+ollama create plamo-3-translate-2b -f Modelfile
+```
+
+1 つ目のコマンドは、モデルのファイルの場所を書いたファイル(Modelfile)を、いまのディレクトリに作ります。
+2 つ目のコマンドは、そのファイルを Ollama に取り込み、`plamo-3-translate-2b` という名前を付けます。
+最後に `success` と表示され、`ollama list` の表示に `plamo-3-translate-2b` があれば、取り込めています。
+Ollama の保存場所(`~/.ollama/models`)には、モデルのファイルと同じ大きさ(1.81 GB)のファイルが作られます。
+取り込んだモデルは、`ollama rm plamo-3-translate-2b` で消せます[Ollama 説明書 (2026/11), cli, Remove a model]。
+
+#### アプリの設定
+
 「翻訳を依頼するソフト」で Ollama を選ぶと、次の項目が表示されます。
 
 | 項目 | 内容 |
 | --- | --- |
 | Ollama の URL | 既定は `http://127.0.0.1:11434` です |
-| モデルの名前 | Ollama に入れた PLaMo 3 Translate のモデルの名前です。`ollama list` に表示される名前を入力します。「接続を確かめる」を押すと、Ollama に入っているモデルの名前が、候補として表示されます |
+| モデルの名前 | Ollama に入れた PLaMo 3 Translate のモデルの名前です。上の手順で入れた場合は、`plamo-3-translate-2b` です。「接続を確かめる」を押すと、Ollama に入っているモデルの名前が、候補として表示されます |
 | 同時に依頼する数 | Ollama は、同時に処理できる依頼の数を知らせないため、ここで指定します。既定は 1 です |
 
-Ollama への対応は、通信の形だけを確かめた段階です。
-**PLaMo 3 Translate を Ollama で動かす確認は、まだ行っていません**。
-Ollama が PLaMo 3 Translate のモデルのファイルを読み込めるかどうかも、確かめていません。
-また、Ollama には、llama-server の起動時に渡している PLaMo 3 Translate 向けの指定を渡せません。
-そのため、このアプリが主に対応している依頼先は、llama-server です。
+「接続を確かめる」を押して `接続できました` と表示されれば、llama-server のときと同じ操作で翻訳できます。
+
+#### llama-server との違い
+
+開発に使っているパソコン(Apple M5、Ollama 0.40.16、モデルは `2b`・Q4_K_M)で確かめた結果は、次のとおりです。
+詳しい記録は [note/021_probe-backends.md](note/021_probe-backends.md) と [note/022_ollama-plamo-check.md](note/022_ollama-plamo-check.md) にあります。
+
+**一部の段落で、訳文が変わります。**
+`npm run model` は、llama-server の起動時に、PLaMo 3 Translate 向けの補正の値を渡しています([note/004_llama-launcher.md](note/004_llama-launcher.md))。
+Ollama には、この値を渡す手段が見つかっていません。
+同じ文章を両方に訳させると、短い入力では同じ訳文になり、長い入力では訳文が変わることがありました。
+補正の値を渡さずに起動した llama-server は、確かめた 4 通りの入力すべてで、Ollama と一字一句同じ訳文を返しました。
+arXiv 1706.03762 では、104 段落のうち 99 段落が llama-server と同じ訳文になり、5 段落は言い回しが変わりました(「英仏翻訳」と「英語-フランス語翻訳」など)。
+どちらの訳文が良いかは、評価していません。
+この比較は、`npm run probe:backends -- --llama http://127.0.0.1:8080 --ollama-model plamo-3-translate-2b` でやり直せます。
+
+**PDF の翻訳にかかる時間が、長くなります。**
+Ollama は、既定では、1 つのモデルで依頼を 1 件ずつ処理します[Ollama 説明書 (2026/11), faq, How does Ollama handle concurrent requests?]。
+`npm run model` で起動した llama-server は、4 件を同時に処理します。
+
+| 論文 | 訳した段落 | 失敗 | Ollama での時間(秒) | llama-server での時間(秒) |
+| --- | ---: | ---: | ---: | ---: |
+| arXiv 1706.03762(1 段組) | 104 | 0 | 107.6 | 45.2 |
+| arXiv 1512.03385(2 段組) | 132 | 0 | 192.2 | 75.7 |
+
+時間は、「この PDF を翻訳する」を押してから、すべての段落を訳し終えるまでのもので、測定はそれぞれ 1 回です。
+llama-server での時間は、「PDF を翻訳する」の節に書いた値です。
+Ollama での測定では、「同時に依頼する数」を、1706.03762 では 1、1512.03385 では 4 にしました。
+
+依頼を 1 件ずつ送ったときの生成の速度は、どちらも 61 から 67 トークン毎秒で、差はありませんでした。
+「同時に依頼する数」を増やしても、Ollama の側が 1 件ずつ処理するため、速くはなりません。
+段落 8 件を訳す時間は、1 件ずつ送った場合が 11.4 秒、同時に 4 件送った場合が 10.9 秒でした。
+Ollama の側で同時に処理する数(環境変数 `OLLAMA_NUM_PARALLEL`)を増やした場合は、確かめていません。
+
+**しばらく使わなかったあとの最初の依頼に、時間がかかります。**
+Ollama は、既定では、モデルをメモリに 5 分間保ったあとで降ろします[Ollama 説明書 (2026/11), faq, How do I keep a model loaded in memory or make it unload immediately?]。
+モデルの読み込みが入った依頼は、そうでない依頼より、2 秒から 7 秒ほど長くかかりました。
 
 ## PDF を開く
 
@@ -559,7 +612,6 @@ Web アプリでは、「翻訳サーバー」の画面の「llama-server の UR
 
 1. `2b` 以外のモデルでの生成の速度と、メモリの使用量の測定
 2. 訳語を固定する手段(用語集)
-3. PLaMo 3 Translate を Ollama で動かす確認
 
 ## ライセンス
 
@@ -612,3 +664,5 @@ Built with PLaMo
 [ONNX Runtime Web 1.31.1, 2026/11] Microsoft. "onnxruntime-web." npm. https://www.npmjs.com/package/onnxruntime-web
 
 [plamo-translate-cli, 2026/11] Preferred Networks. "plamo-translate-cli." GitHub. https://github.com/pfnet/plamo-translate-cli
+
+[Ollama 説明書, 2026/11] Ollama. "Ollama の説明書(import、faq、cli の各ページ)." https://docs.ollama.com/

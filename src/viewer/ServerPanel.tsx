@@ -19,7 +19,8 @@ const KINDS: { kind: BackendKind; label: string; description: string }[] = [
   {
     kind: 'ollama',
     label: 'Ollama',
-    description: 'すでに Ollama を使っている場合の、代わりの依頼先です。PLaMo 3 Translate のモデルを、Ollama に入れておく必要があります。',
+    description:
+      'すでに Ollama を使っている場合の、代わりの依頼先です。PLaMo 3 Translate のモデルを、Ollama に入れておく必要があります(入れ方は、README の「Ollama を使う場合」)。',
   },
 ]
 
@@ -126,7 +127,7 @@ export function ServerPanel() {
           </p>
           <p className="status">
             Ollama には、llama-server の起動時に渡している PLaMo 3 Translate
-            向けの指定を渡せません。長い段落で、訳の質が落ちる可能性があります。
+            向けの補正を渡せません。そのため、一部の段落で、訳文が llama-server のものと変わります。
           </p>
         </section>
       )}
