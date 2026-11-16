@@ -14,6 +14,7 @@ import type {
   TranslatorBackend,
 } from './backend.ts'
 import { buildPfml3Prompt, cleanPfml3Output } from './pfml3.ts'
+import { readLines } from './streamLines.ts'
 
 export const DEFAULT_LLAMA_SERVER_URL = 'http://127.0.0.1:8080'
 
@@ -75,34 +76,10 @@ function errorMessageOf(error: NonNullable<CompletionEvent['error']>): string {
   return error.message ?? JSON.stringify(error)
 }
 
-/**
- * Server-Sent Events の本文から、"data:" 行の中身を 1 件ずつ取り出す。
- * 通信の区切りは行や文字の途中に入りうるため、行が揃うまで溜めてから返す。
- */
+/** Server-Sent Events の本文から、"data:" 行の中身を 1 件ずつ取り出す。 */
 async function* readSseData(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {
-  const reader = body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  try {
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      let newline = buffer.indexOf('\n')
-      while (newline !== -1) {
-        const line = buffer.slice(0, newline).replace(/\r$/, '')
-        buffer = buffer.slice(newline + 1)
-        if (line.startsWith('data:')) yield line.slice(5).trim()
-        newline = buffer.indexOf('\n')
-      }
-    }
-    buffer += decoder.decode()
-    const rest = buffer.replace(/\r$/, '')
-    if (rest.startsWith('data:')) yield rest.slice(5).trim()
-  } finally {
-    // 途中で読むのをやめた場合に、サーバーとの接続を閉じる。
-    await reader.cancel().catch(() => undefined)
-    reader.releaseLock()
+  for await (const line of readLines(body)) {
+    if (line.startsWith('data:')) yield line.slice(5).trim()
   }
 }
 
