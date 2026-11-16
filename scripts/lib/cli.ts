@@ -1,4 +1,5 @@
 import { LlamaServerError } from '../../src/translate/llamaServer.ts'
+import { OllamaError } from '../../src/translate/ollama.ts'
 
 /** 利用者の指定の誤り。内部の呼び出し履歴は出さず、メッセージだけを表示する。 */
 export class UsageError extends Error {
@@ -20,7 +21,7 @@ export function parsePositiveInteger(value: string, name: string): number {
 /**
  * スクリプトの本体を実行する。
  * 失敗した場合は、原因を表示して終了コード 1 で終える。
- * 指定の誤りと llama-server に起因する失敗は、利用者が対処できるよう、短い案内だけを表示する。
+ * 指定の誤りと、llama-server や Ollama に起因する失敗は、利用者が対処できるよう、短い案内だけを表示する。
  */
 export async function runMain(main: () => Promise<void>): Promise<void> {
   try {
@@ -31,6 +32,8 @@ export async function runMain(main: () => Promise<void>): Promise<void> {
     } else if (error instanceof LlamaServerError) {
       console.error(error.message)
       console.error('llama-server は npm run model で起動できます。')
+    } else if (error instanceof OllamaError) {
+      console.error(error.message)
     } else {
       console.error(error)
     }

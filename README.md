@@ -52,7 +52,7 @@ llama-server は、コマンド `npm run model` で起動します。
 
 | 区分 | 内容 |
 | --- | --- |
-| 実装してあるもの | llama-server を起動するコマンド、llama-server へ翻訳を依頼する処理、Ollama へ翻訳を依頼する処理、翻訳サーバーの設定と接続の状態を確かめる画面、PDF を開いて解析結果を確かめる画面、レイアウト検出、PDF の翻訳と訳文の重ね表示、文中の数式を元の見た目のまま訳文に入れる処理、段やページをまたいで続く段落をつなぐ処理、題名や直前の段落を文脈として渡す処理、訳文の保存、貼り付けた英文を訳す画面、実験用のコマンド 3 つ(`npm run probe:speed`、`npm run probe:placeholders`、`npm run probe:context`)、単体テスト |
+| 実装してあるもの | llama-server を起動するコマンド、llama-server へ翻訳を依頼する処理、Ollama へ翻訳を依頼する処理、翻訳サーバーの設定と接続の状態を確かめる画面、PDF を開いて解析結果を確かめる画面、レイアウト検出、PDF の翻訳と訳文の重ね表示、文中の数式を元の見た目のまま訳文に入れる処理、段やページをまたいで続く段落をつなぐ処理、題名や直前の段落を文脈として渡す処理、訳文の保存、貼り付けた英文を訳す画面、実験用のコマンド 4 つ(`npm run probe:speed`、`npm run probe:placeholders`、`npm run probe:context`、`npm run probe:backends`)、単体テスト |
 | 動くことを確かめたもの | 「セットアップ」の手順 1 から手順 5(手順 1 と手順 2、単体テスト、ビルド、模擬サーバーを使う手順は、新しく複製した状態からも確かめました)、arXiv の論文 2 本(1 段組と 2 段組)での PDF の表示、レイアウト検出、翻訳、訳文の重ね表示、文中の数式の表示、段やページをまたぐ段落の結合、開き直したときの訳文の再利用、翻訳の中止、本文が Computer Modern の論文 1 本での文中の数式の表示(1 ページ分)、翻訳サーバーの設定の画面(llama-server への接続、接続できない場合の表示、Ollama との通信)、単体テスト、ビルド、**模擬サーバー**と実物の llama-server に対する実験用のコマンド、`npm run model -- --dry-run` |
 | 確かめていないこと | PLaMo 3 Translate を Ollama で動かすこと(Ollama との通信は、別のモデルで確かめました)、既定の `2b`・Q4_K_M 以外のモデルでの動作、8080 番のポートでの llama-server の起動(開発に使っているパソコンでは別のソフトが 8080 番を使っているため、8081 番で確かめました)、メモリの使用量、出版社版の PDF での表示、ファイルの選択とドラッグ&ドロップで PDF を開く操作、`npm run build` で作ったファイルでのレイアウト検出と翻訳 |
 | まだ無いもの | 訳語を固定する手段(用語集)、保存した訳文を消す操作 |
@@ -406,6 +406,8 @@ npm run probe:speed -- --base-url http://127.0.0.1:8089
 模擬サーバーの場合、表示される速度は見かけの値で、実物の性能とは関係がありません。
 
 `npm run probe:placeholders` と `npm run probe:context` も、同じ `--base-url` の指定で模擬サーバーに対して実行できます。
+`npm run probe:backends` は、比べる依頼先を `--llama` で 2 つ以上指定します。
+模擬サーバーで流れを試す場合は、`npm run probe:backends -- --llama http://127.0.0.1:8089 --llama http://127.0.0.1:8089` のように、同じ URL を 2 回指定します。
 
 ### 実物の llama-server への依頼
 
@@ -441,6 +443,7 @@ npm run probe:speed
 | `npm run probe:speed` | llama-server に英語の段落を訳させ、生成の速度を測ります |
 | `npm run probe:placeholders` | 数式の位置を示す目印が、訳文に残る割合を測ります |
 | `npm run probe:context` | 文脈の渡し方を変えて同じ文章を訳させ、訳文を並べて表示します |
+| `npm run probe:backends` | 同じ文章を複数の依頼先(llama-server、Ollama)に訳させ、訳文が一字一句同じかどうかを比べます |
 
 `npm run probe:placeholders` の「目印」は、文中の数式の位置を示す記号です。
 このアプリは、文中の数式を目印に置き換えてから訳し、訳文の目印の位置に元の数式を戻します(「PDF を翻訳する」の節)。
