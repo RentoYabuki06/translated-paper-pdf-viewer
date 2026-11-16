@@ -12,12 +12,12 @@ import { median } from '../lib/stats.ts'
 import { arxivPdfUrl, parseArxivId } from '../pdf/arxiv.ts'
 import { loadPdf } from '../pdf/pdfjs.ts'
 import { openTranslationCache } from '../translate/cache.ts'
-import { LlamaServerBackend } from '../translate/llamaServer.ts'
-import { loadServerUrl, saveServerUrl } from '../translate/serverUrl.ts'
+import { describeTarget } from '../translate/settings.ts'
 import { PageView } from './PageView.tsx'
 import type { PageSize } from './PageView.tsx'
 import { DocumentSession } from './session.ts'
 import type { SessionProgress } from './session.ts'
+import { useTranslator } from './translatorContext.ts'
 import type { XRayOptions } from './XRayLayer.tsx'
 
 const SCALES = [1, 1.25, 1.5, 2]
@@ -71,7 +71,13 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-export function PdfViewer() {
+interface Props {
+  /** 翻訳サーバーの設定の画面を開く。 */
+  onOpenServerSettings: () => void
+}
+
+export function PdfViewer({ onOpenServerSettings }: Props) {
+  const translator = useTranslator()
   const [opened, setOpened] = useState<Opened | null>(null)
   const [status, setStatus] = useState<Status>({ state: 'idle' })
   const [arxivInput, setArxivInput] = useState('')
@@ -87,7 +93,6 @@ export function PdfViewer() {
   const [dragging, setDragging] = useState(false)
   const [backend, setBackend] = useState<LayoutBackend>('webgpu')
   const [detectorState, setDetectorState] = useState<DetectorState>({ state: 'off' })
-  const [serverUrl, setServerUrl] = useState(loadServerUrl)
   const [showTranslations, setShowTranslations] = useState(true)
   const [translationError, setTranslationError] = useState<string | null>(null)
   /** 翻訳を始める準備(接続の確認やモデルの読み込み)をしている間は true。 */
@@ -144,9 +149,12 @@ export function PdfViewer() {
     setTranslationError(null)
     setStartingTranslation(true)
     try {
-      saveServerUrl(serverUrl)
-      const translator = new LlamaServerBackend({ baseUrl: serverUrl })
-      const info = await translator.info()
+      // 翻訳サーバーに接続できることを、先に確かめる。設定は「翻訳サーバー」の画面のものを使う。
+      const connected = await translator.check()
+      if (!connected.ok) {
+        setTranslationError(`翻訳サーバーに接続できません。「翻訳サーバー」の画面で、設定を確かめてください。(${connected.message})`)
+        return
+      }
       const detector = detectorRef.current ?? (await enableDetector())
       if (!detector) return
       const cache = await openTranslationCache()
@@ -155,7 +163,7 @@ export function PdfViewer() {
       // 訳文を読みやすくするため、確認用の枠を消す。
       setXray({ paragraphs: false, lines: false, runs: false, math: false, regions: false })
       setShowTranslations(true)
-      session.startTranslation(translator, info, cache)
+      session.startTranslation(connected.backend, connected.info, cache)
     } catch (error) {
       setTranslationError(messageOf(error))
     } finally {
@@ -377,15 +385,10 @@ export function PdfViewer() {
             </span>
             <span className="toolbar-group">
               翻訳:
-              <input
-                type="url"
-                className="server-url"
-                value={serverUrl}
-                onChange={(event) => setServerUrl(event.target.value)}
-                disabled={progress.translating || startingTranslation}
-                aria-label="llama-server の URL"
-                spellCheck={false}
-              />
+              <span className="status">{describeTarget(translator.settings)}</span>
+              <button type="button" onClick={onOpenServerSettings} disabled={progress.translating || startingTranslation}>
+                設定
+              </button>
               {progress.translating ? (
                 <button type="button" onClick={() => opened.session.stopTranslation()}>
                   中止

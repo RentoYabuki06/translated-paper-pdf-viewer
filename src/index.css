@@ -270,13 +270,6 @@ footer {
   pointer-events: none;
 }
 
-.toolbar .server-url {
-  flex: none;
-  width: 13rem;
-  min-width: 0;
-  padding: 0.15rem 0.4rem;
-}
-
 /* 訳文の層。中の座標はページのポイントで、層全体を倍率に合わせて拡大縮小する。 */
 .translation-layer {
   position: absolute;
@@ -391,4 +384,101 @@ footer {
   left: -100000px;
   visibility: hidden;
   pointer-events: none;
+}
+
+/* 翻訳サーバーとの接続の状態を、見出しの横に短く示す。 */
+.tabs .badge {
+  margin-left: auto;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.tabs .badge.ok {
+  border-color: light-dark(#26a269, #57e389);
+  color: light-dark(#1b7a4c, #8ff0a4);
+}
+
+.tabs .badge.error {
+  border-color: var(--error);
+  color: var(--error);
+}
+
+/* 翻訳サーバーの設定の画面。 */
+.choices {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.choices legend {
+  padding: 0 0.25rem;
+  font-weight: 600;
+}
+
+.panel .choice {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+  margin: 0.25rem 0;
+  font-weight: 400;
+}
+
+.choice input {
+  flex: none;
+  min-width: 0;
+}
+
+.choice .status {
+  display: block;
+}
+
+.panel input.wide {
+  display: block;
+  width: 100%;
+  max-width: 32rem;
+  box-sizing: border-box;
+  margin-bottom: 0.75rem;
+}
+
+.panel input[type='number'] {
+  flex: none;
+  min-width: 0;
+  width: 5rem;
+}
+
+.connection {
+  margin-top: 0.75rem;
+}
+
+.connection .ok {
+  margin: 0;
+  color: light-dark(#1b7a4c, #8ff0a4);
+  font-weight: 600;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.15rem 1rem;
+  margin: 0.5rem 0;
+}
+
+.facts dt {
+  color: var(--muted);
+}
+
+.facts dd {
+  margin: 0;
+}
+
+.warnings,
+.hints {
+  margin: 0.5rem 0 0;
+  padding-left: 1.25rem;
+  font-size: 0.9rem;
+}
+
+.warnings {
+  color: light-dark(#8a5a00, #f8e45c);
 }

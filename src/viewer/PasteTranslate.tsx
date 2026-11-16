@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { mapWithConcurrency } from '../lib/pool.ts'
-import type { BackendInfo, StopReason } from '../translate/backend.ts'
-import { LlamaServerBackend } from '../translate/llamaServer.ts'
-import { loadServerUrl, saveServerUrl } from '../translate/serverUrl.ts'
+import type { StopReason } from '../translate/backend.ts'
+import { describeTarget } from '../translate/settings.ts'
 import { splitParagraphs } from '../translate/splitParagraphs.ts'
+import { useTranslator } from './translatorContext.ts'
 
 /** 1 段落の訳文の長さの上限(トークン数)。実験用のコマンドと同じ値。 */
 const MAX_TOKENS = 1024
@@ -27,12 +27,6 @@ interface ParagraphState {
   error?: string
 }
 
-type Connection =
-  | { state: 'idle' }
-  | { state: 'checking' }
-  | { state: 'ok'; info: BackendInfo }
-  | { state: 'error'; message: string }
-
 interface Summary {
   seconds: number
   outputTokens: number
@@ -50,9 +44,15 @@ const STATUS_LABEL: Record<ParagraphStatus, string> = {
   cancelled: '中止',
 }
 
-export function PasteTranslate() {
-  const [serverUrl, setServerUrl] = useState(loadServerUrl)
-  const [connection, setConnection] = useState<Connection>({ state: 'idle' })
+interface Props {
+  /** 翻訳サーバーの設定の画面を開く。 */
+  onOpenServerSettings: () => void
+}
+
+export function PasteTranslate({ onOpenServerSettings }: Props) {
+  const translator = useTranslator()
+  /** 翻訳を始められなかった理由。 */
+  const [startError, setStartError] = useState<string | null>(null)
   const [sourceText, setSourceText] = useState(SAMPLE_TEXT)
   const [paragraphs, setParagraphs] = useState<ParagraphState[]>([])
   const [running, setRunning] = useState(false)
@@ -66,37 +66,27 @@ export function PasteTranslate() {
     setParagraphs((current) => current.map((item, i) => (i === index ? { ...item, ...patch } : item)))
   }
 
-  async function checkConnection(): Promise<BackendInfo | null> {
-    setConnection({ state: 'checking' })
-    saveServerUrl(serverUrl)
-    try {
-      const info = await new LlamaServerBackend({ baseUrl: serverUrl }).info()
-      setConnection({ state: 'ok', info })
-      return info
-    } catch (error) {
-      setConnection({ state: 'error', message: messageOf(error) })
-      return null
-    }
-  }
-
   async function translateAll(): Promise<void> {
     const sources = splitParagraphs(sourceText)
     if (sources.length === 0) return
 
     setRunning(true)
     setSummary(null)
+    setStartError(null)
     setParagraphs(sources.map((source) => ({ source, translation: '', status: 'waiting' })))
 
-    const info = await checkConnection()
-    if (!info) {
+    // 翻訳サーバーに接続できることを、先に確かめる。設定は「翻訳サーバー」の画面のものを使う。
+    const connected = await translator.check()
+    if (!connected.ok) {
+      setStartError(`翻訳サーバーに接続できません。「翻訳サーバー」の画面で、設定を確かめてください。(${connected.message})`)
       setParagraphs([])
       setRunning(false)
       return
     }
+    const { backend, info } = connected
 
     const controller = new AbortController()
     abortRef.current = controller
-    const backend = new LlamaServerBackend({ baseUrl: serverUrl })
     const started = performance.now()
     let outputTokens = 0
 
@@ -141,29 +131,17 @@ export function PasteTranslate() {
       <p>英語の文章を貼り付けて、PLaMo 3 Translate の訳文を確かめます。</p>
 
       <section className="panel">
-        <label htmlFor="server-url">llama-server の URL</label>
         <div className="row">
-          <input
-            id="server-url"
-            type="url"
-            value={serverUrl}
-            onChange={(event) => setServerUrl(event.target.value)}
-            disabled={running}
-            spellCheck={false}
-          />
-          <button type="button" onClick={() => void checkConnection()} disabled={running}>
-            接続を確かめる
+          <span className="status">依頼先: {describeTarget(translator.settings)}</span>
+          <button type="button" onClick={onOpenServerSettings} disabled={running}>
+            設定
           </button>
         </div>
-        <p className="status" role="status">
-          {connection.state === 'idle' && '接続は、まだ確かめていません。'}
-          {connection.state === 'checking' && '確かめています…'}
-          {connection.state === 'ok' &&
-            `接続できました。モデル: ${connection.info.modelId}、同時処理数: ${connection.info.slots}、文脈の長さ: ${
-              connection.info.contextPerSlot ?? '不明'
-            }`}
-          {connection.state === 'error' && <span className="error">{connection.message}</span>}
-        </p>
+        {startError && (
+          <p className="status" role="status">
+            <span className="error">{startError}</span>
+          </p>
+        )}
       </section>
 
       <section className="panel">
