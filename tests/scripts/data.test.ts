@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
+import { CONTEXT_PARAGRAPHS, CONTEXT_TITLE } from '../../scripts/data/contextParagraphs.ts'
 import { MATH_SENTENCES } from '../../scripts/data/mathSentences.ts'
 import { buildParagraphs, fillTemplate, plainSentence } from '../../scripts/lib/paragraphs.ts'
 import { median, sum } from '../../src/lib/stats.ts'
+import { tagIds } from '../../src/math/placeholders.ts'
 
 describe('MATH_SENTENCES(実験用の文のデータ)', () => {
   it('60 件ある', () => {
@@ -79,5 +81,25 @@ describe('sum と median', () => {
     expect(median([3, 1, 2])).toBe(2)
     expect(median([4, 1, 3, 2])).toBe(2.5)
     expect(() => median([])).toThrow()
+  })
+})
+
+describe('CONTEXT_PARAGRAPHS(文脈の実験用の文章)', () => {
+  it('見出しから始まり、見出しと本文の両方を含む', () => {
+    expect(CONTEXT_PARAGRAPHS[0]?.kind).toBe('heading')
+    expect(CONTEXT_PARAGRAPHS.some((paragraph) => paragraph.kind === 'body')).toBe(true)
+    expect(CONTEXT_TITLE.length).toBeGreaterThan(0)
+  })
+
+  it('どの段落も、数式の目印を 1 から順に、ちょうど 1 回ずつ含む', () => {
+    for (const paragraph of CONTEXT_PARAGRAPHS) {
+      const ids = tagIds(paragraph.text)
+      expect(ids, paragraph.text).toEqual(ids.map((_, index) => index + 1))
+    }
+  })
+
+  it('同じ段落が重複していない', () => {
+    const texts = CONTEXT_PARAGRAPHS.map((paragraph) => paragraph.text)
+    expect(new Set(texts).size).toBe(texts.length)
   })
 })

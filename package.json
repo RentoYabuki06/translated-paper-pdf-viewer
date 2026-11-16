@@ -14,7 +14,8 @@
     "model": "node scripts/llama.ts",
     "mock": "node scripts/mock-llama-server.ts",
     "probe:speed": "node scripts/probe-speed.ts",
-    "probe:placeholders": "node scripts/probe-placeholders.ts"
+    "probe:placeholders": "node scripts/probe-placeholders.ts",
+    "probe:context": "node scripts/probe-context.ts"
   },
   "dependencies": {
     "onnxruntime-web": "^1.31.1",
