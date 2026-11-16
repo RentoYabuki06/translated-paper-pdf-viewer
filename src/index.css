@@ -367,7 +367,9 @@ footer {
 /* 訳文の中に置く数式。元のページの描画を背景にして、数式の範囲だけを見せる。 */
 .math-sprite {
   display: inline-block;
-  margin: 0 0.12em;
+  /* 上下の余白は、数式ごとに style で指定する(行送りを広げないための負の余白)。 */
+  margin-left: 0.12em;
+  margin-right: 0.12em;
   background-repeat: no-repeat;
   text-indent: 0;
 }

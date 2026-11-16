@@ -93,7 +93,6 @@ interface ActiveTranslation {
   modelId: string
   cache: TranslationCache
   queue: PriorityQueue<TranslationUnit>
-  requests: number
   /** すべてのページの翻訳単位を組み立て終えたら true。 */
   prepared: boolean
 }
@@ -121,6 +120,8 @@ export class DocumentSession {
   private translation: ActiveTranslation | null = null
   private progress: SessionProgress | null = null
   private focusPage = 1
+  /** 直近の翻訳で、llama-server へ依頼した数。翻訳を止めたあとも、表示のために残す。 */
+  private requests = 0
   private disposed = false
   /** 字形の実際の範囲を測る関数。数式の範囲を決めるときに使う。 */
   private readonly measureInk: GlyphInkMeasurer = createCanvasInkMeasurer()
@@ -174,7 +175,7 @@ export class DocumentSession {
       kept: 0,
       retried: 0,
       truncated: 0,
-      requests: this.translation?.requests ?? 0,
+      requests: this.requests,
     }
     for (const page of this.pages.values()) {
       if (page.analysis) {
@@ -289,7 +290,6 @@ export class DocumentSession {
       backend,
       modelId: info.modelId,
       cache,
-      requests: 0,
       prepared: false,
       queue: new PriorityQueue<TranslationUnit>({
         // 同時に依頼する数は、サーバーが同時に処理できる数に合わせる。
@@ -300,6 +300,7 @@ export class DocumentSession {
       }),
     }
     this.translation = translation
+    this.requests = 0
     this.emit()
     void this.prepareAll(translation)
   }
@@ -362,7 +363,7 @@ export class DocumentSession {
     const saved = await translation.cache.get(key).catch(() => undefined)
     if (saved) return { text: saved.text, truncated: false }
 
-    translation.requests += 1
+    this.requests += 1
     this.emit()
     const result = await translation.backend.translate(request, { signal })
     const text = normalizeTags(result.text)

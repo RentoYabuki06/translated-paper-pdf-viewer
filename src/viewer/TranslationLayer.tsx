@@ -9,22 +9,14 @@
  */
 
 import { useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties } from 'react'
-import type { MathPart, MathSlot } from '../analysis/source.ts'
+import type { MathSlot } from '../analysis/source.ts'
 import type { TranslationUnit } from '../analysis/units.ts'
 import { splitByTags } from '../math/placeholders.ts'
 import { fitText } from '../overlay/fit.ts'
 import type { FitResult } from '../overlay/fit.ts'
+import { spriteStyle } from '../overlay/sprite.ts'
+import type { PageImage } from '../overlay/sprite.ts'
 import type { UnitState } from './session.ts'
-
-/** 数式を切り抜くもとになる、ページの画像。 */
-export interface PageImage {
-  /** ページ全体を描画した画像の URL。まだ用意できていない場合は null。 */
-  url: string | null
-  /** ページの大きさ(ポイント)。 */
-  width: number
-  height: number
-}
 
 interface Props {
   units: readonly TranslationUnit[]
@@ -38,25 +30,6 @@ interface Props {
 
 /** 原文の範囲に足す、行の上下の余白の分。文字の大きさに対する倍率。 */
 const LINE_SLACK_EM = 0.35
-
-/**
- * 数式の一部を、ページの画像から切り抜いて表示する。
- *
- * 長さは、原文の文字の大きさを 1 とする単位(em)で指定する。
- * 訳文の文字を小さくすると、数式も同じ割合で小さくなる。
- * 数式の下端は、原文での基準線からの距離の分だけ、訳文の基準線より下に置く。
- */
-function spriteStyle(part: MathPart, fontSize: number, page: PageImage): CSSProperties {
-  const em = (points: number) => `${points / fontSize}em`
-  return {
-    width: em(part.width),
-    height: em(part.height),
-    verticalAlign: em(part.baseline - (part.y + part.height)),
-    backgroundImage: page.url ? `url("${page.url}")` : undefined,
-    backgroundSize: `${em(page.width)} ${em(page.height)}`,
-    backgroundPosition: `${em(-part.x)} ${em(-part.y)}`,
-  }
-}
 
 interface BoxProps {
   unit: TranslationUnit
