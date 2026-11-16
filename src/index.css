@@ -294,7 +294,8 @@ footer {
 }
 
 .translation {
-  overflow: hidden;
+  /* 最後の行の数式は、箱の下端から少しはみ出すことがある。はみ出した分も見せる。 */
+  overflow: visible;
   color: #111;
   font-family: 'Hiragino Mincho ProN', 'Yu Mincho', 'Noto Serif JP', serif;
   text-align: justify;
@@ -311,6 +312,10 @@ footer {
 }
 
 /* 収まらなかった訳文は末尾を隠し、右下に印を付ける。マウスを重ねると全文を見せる。 */
+.translation.clipped {
+  overflow: hidden;
+}
+
 .translation.clipped::after {
   content: '…';
   position: absolute;
@@ -324,6 +329,7 @@ footer {
 
 .translation.clipped:hover {
   z-index: 1;
+  overflow: visible;
   max-height: none !important;
   background: #fff;
   box-shadow: 0 0 0 2px #fff, 0 1px 6px 2px rgb(0 0 0 / 0.25);
