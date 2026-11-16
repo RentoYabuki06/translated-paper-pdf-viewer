@@ -6,117 +6,126 @@
  *
  * 訳文の中の数式の目印の位置には、元のページの描画から切り抜いた数式を置く。
  * 数式を組み直さないので、数式の見た目は原文と同じになる。
+ *
+ * 段やページをまたぐ段落の訳文は、複数の範囲(断片)に分けて表示する。
+ * この層は、自分のページにある断片だけを表示する。分ける位置は、layout.ts が決める。
  */
 
-import { useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { MathSlot } from '../analysis/source.ts'
-import type { TranslationUnit } from '../analysis/units.ts'
-import { splitByTags } from '../math/placeholders.ts'
-import { fitText } from '../overlay/fit.ts'
-import type { FitResult } from '../overlay/fit.ts'
+import { useEffect, useMemo } from 'react'
+import type { ReactNode } from 'react'
+import type { TranslationUnit, UnitFragment } from '../analysis/units.ts'
+import type { Atom } from '../overlay/atoms.ts'
+import { layoutUnit, usesFreeWidth } from '../overlay/layout.ts'
 import { spriteStyle } from '../overlay/sprite.ts'
-import type { PageImage } from '../overlay/sprite.ts'
-import type { UnitState } from './session.ts'
+import type { PageFragment, UnitState } from './session.ts'
 
 interface Props {
-  units: readonly TranslationUnit[]
+  /** このページに表示する断片。 */
+  fragments: readonly PageFragment[]
   translations: Readonly<Record<string, UnitState>>
-  page: PageImage
+  /** ページ番号ごとの、ページの画像の URL。数式を切り抜くもとになる。 */
+  images: ReadonlyMap<number, string>
+  /** ページの画像が要ることを伝える。 */
+  requestImage: (pageNumber: number) => void
+  /** ページの大きさ(ポイント)。 */
+  width: number
+  height: number
   scale: number
   /** 原文の表示に切り替えている翻訳単位の名前。 */
   originals: ReadonlySet<string>
   onToggle: (unitId: string) => void
 }
 
-/** 原文の範囲に足す、行の上下の余白の分。文字の大きさに対する倍率。 */
-const LINE_SLACK_EM = 0.35
-
 interface BoxProps {
   unit: TranslationUnit
+  index: number
   state: UnitState
-  page: PageImage
+  images: ReadonlyMap<number, string>
+  requestImage: (pageNumber: number) => void
+  pageWidth: number
+  pageHeight: number
   onToggle: (unitId: string) => void
 }
 
-function TranslationBox({ unit, state, page, onToggle }: BoxProps) {
-  const ref = useRef<HTMLDivElement>(null)
-  const [fit, setFit] = useState<FitResult | null>(null)
-  const singleLine = unit.lineCount === 1
+/** 訳文の単位の並びを、表示する要素にする。続く文字は、1 つの文字列にまとめる。 */
+function renderAtoms(
+  atoms: readonly Atom[],
+  unit: TranslationUnit,
+  images: ReadonlyMap<number, string>,
+  pageWidth: number,
+  pageHeight: number,
+): ReactNode[] {
+  const nodes: ReactNode[] = []
+  let text = ''
+  atoms.forEach((atom, index) => {
+    if (atom.type === 'char') {
+      text += atom.text
+      return
+    }
+    if (text.length > 0) {
+      nodes.push(text)
+      text = ''
+    }
+    // 数式は、その数式があるページの画像から切り抜く。訳文が表示されるページとは限らない。
+    const page = { url: images.get(atom.part.pageNumber) ?? null, width: pageWidth, height: pageHeight }
+    nodes.push(<span key={index} className="math-sprite" title={atom.title} style={spriteStyle(atom.part, unit.fontSize, page)} />)
+  })
+  if (text.length > 0) nodes.push(text)
+  return nodes
+}
+
+/** 翻訳単位の断片 1 つ分の訳文。 */
+function TranslationBox({ unit, index, state, images, requestImage, pageWidth, pageHeight, onToggle }: BoxProps) {
+  const fragment = unit.fragments[index] as UnitFragment
+  // 収まる文字の大きさと行送り、断片ごとの訳文の範囲。翻訳単位と訳文が同じなら、測り直さない。
+  const layout = useMemo(() => layoutUnit(unit, state.text), [unit, state.text])
+  const start = index === 0 ? 0 : (layout.breaks[index - 1] ?? 0)
+  const end = layout.breaks[index] ?? layout.atoms.length
+  const atoms = useMemo(() => {
+    const slice = layout.atoms.slice(start, end)
+    // 前の断片の続きは、空白で始めない。
+    while (index > 0 && slice[0]?.type === 'char' && slice[0].text === ' ') slice.shift()
+    return slice
+  }, [layout, start, end, index])
+
+  // この断片に出てくる数式の、もとのページの画像を用意してもらう。
+  useEffect(() => {
+    for (const atom of atoms) {
+      if (atom.type === 'math') requestImage(atom.part.pageNumber)
+    }
+  }, [atoms, requestImage])
+
+  if (atoms.length === 0) return null
+
+  const last = index === unit.fragments.length - 1
+  const free = usesFreeWidth(unit, fragment)
   const centered = unit.kind === 'doc_title'
-
-  const segments = useMemo(() => splitByTags(state.text), [state.text])
-  const slots = useMemo(() => new Map<number, MathSlot>(unit.math.map((slot) => [slot.id, slot])), [unit])
-
-  // 訳文が決まったら、収まる文字の大きさと行送りを、実際に組んで測って決める。
-  // 数式の大きさは文字の大きさに比例するので、数式を含めた高さが測られる。
-  useLayoutEffect(() => {
-    const element = ref.current
-    if (!element) return
-    const slack = LINE_SLACK_EM * unit.fontSize
-    const result = fitText(
-      {
-        fontSize: unit.fontSize,
-        linePitch: unit.linePitch,
-        // 原文の範囲は文字の上端から下端までで、行の上下の余白を含まない。
-        // 同じ行数の訳文が「収まらない」と判定されないよう、余白の分を足す。
-        height: unit.rect.height + slack,
-        maxHeight: Math.max(unit.maxHeight, unit.rect.height + slack),
-      },
-      (fontSize, lineHeight) => {
-        element.style.fontSize = `${fontSize}px`
-        element.style.lineHeight = String(lineHeight)
-        element.style.height = 'auto'
-        return element.scrollHeight
-      },
-    )
-    element.style.height = ''
-    setFit(result)
-  }, [unit, state.text])
-
-  const clipped = fit?.kind === 'clipped'
+  const clipped = layout.kind === 'clipped' && last
   return (
     <div
-      ref={ref}
       lang="ja"
       className={`translation ${unit.kind}${clipped ? ' clipped' : ''}${state.truncated ? ' truncated' : ''}`}
-      data-fit={fit?.kind}
+      data-fit={layout.kind}
+      data-unit={unit.id}
+      data-fragment={`${index + 1}/${unit.fragments.length}`}
       title="クリックで原文を表示"
       onClick={() => onToggle(unit.id)}
       style={{
-        left: unit.rect.x,
-        top: unit.rect.y,
+        left: fragment.rect.x,
+        top: fragment.rect.y,
         // 1 行だけの段落(見出しなど)は、右の空きまで使ってよい。題名は、元の範囲の中央にそろえる。
-        width: singleLine && !centered ? 'max-content' : unit.rect.width,
-        maxWidth: singleLine && !centered ? unit.maxWidth : undefined,
-        maxHeight: clipped ? unit.maxHeight : undefined,
-        fontSize: fit?.fontSize ?? unit.fontSize,
-        lineHeight: fit?.lineHeight,
-        textIndent: unit.indented ? '1em' : undefined,
+        width: free ? 'max-content' : fragment.rect.width,
+        maxWidth: free ? fragment.maxWidth : undefined,
+        maxHeight: clipped ? fragment.maxHeight : undefined,
+        fontSize: layout.fontSize,
+        lineHeight: layout.lineHeight,
+        textIndent: index === 0 && fragment.indented ? '1em' : undefined,
         textAlign: centered ? 'center' : undefined,
-        visibility: fit ? 'visible' : 'hidden',
+        // 次の断片へ続く場合は、最後の行も両端にそろえる。段落の途中の行だからである。
+        textAlignLast: !last && end < layout.atoms.length ? 'justify' : undefined,
       }}
     >
-      {segments.map((segment, index) => {
-        if (segment.type === 'text') {
-          // 数式の前後の空白は、数式の側の余白で空ける。
-          const before = segments[index - 1]?.type === 'math'
-          const after = segments[index + 1]?.type === 'math'
-          let text = segment.text
-          if (before) text = text.replace(/^ +/, '')
-          if (after) text = text.replace(/ +$/, '')
-          return text
-        }
-        const slot = slots.get(segment.id)
-        if (!slot) return null
-        return slot.parts.map((part, partIndex) => (
-          <span
-            key={`${index}-${partIndex}`}
-            className="math-sprite"
-            title={slot.text}
-            style={spriteStyle(part, unit.fontSize, page)}
-          />
-        ))
-      })}
+      {renderAtoms(atoms, unit, images, pageWidth, pageHeight)}
     </div>
   )
 }
@@ -125,20 +134,33 @@ const MARKER_TITLES: Partial<Record<UnitState['status'], string>> = {
   kept: '訳文の中の数式の目印がそろわなかったため、原文のまま表示しています',
 }
 
-export function TranslationLayer({ units, translations, page, scale, originals, onToggle }: Props) {
+export function TranslationLayer({ fragments, translations, images, requestImage, width, height, scale, originals, onToggle }: Props) {
   return (
-    <div className="translation-layer" style={{ width: page.width, height: page.height, transform: `scale(${scale})` }}>
-      {units.map((unit) => {
+    <div className="translation-layer" style={{ width, height, transform: `scale(${scale})` }}>
+      {fragments.map(({ unit, index }) => {
         const state = translations[unit.id]
         if (!state) return null
-        const { x, y, width: w, height: h } = unit.rect
+        const key = `${unit.id}/${index}`
+        const { x, y, width: w, height: h } = (unit.fragments[index] as UnitFragment).rect
         if (state.status === 'done' && !originals.has(unit.id)) {
-          return <TranslationBox key={unit.id} unit={unit} state={state} page={page} onToggle={onToggle} />
+          return (
+            <TranslationBox
+              key={key}
+              unit={unit}
+              index={index}
+              state={state}
+              images={images}
+              requestImage={requestImage}
+              pageWidth={width}
+              pageHeight={height}
+              onToggle={onToggle}
+            />
+          )
         }
         if (state.status === 'done') {
           return (
             <div
-              key={unit.id}
+              key={key}
               className="translation-marker original"
               title="クリックで訳文を表示"
               onClick={() => onToggle(unit.id)}
@@ -148,7 +170,7 @@ export function TranslationLayer({ units, translations, page, scale, originals, 
         }
         return (
           <div
-            key={unit.id}
+            key={key}
             className={`translation-marker ${state.status}`}
             title={state.status === 'failed' ? `翻訳に失敗しました: ${state.error ?? ''}` : MARKER_TITLES[state.status]}
             style={{ left: x, top: y, width: w, height: h }}
@@ -163,20 +185,21 @@ export function TranslationLayer({ units, translations, page, scale, originals, 
 export const COVER_PAD_X = 1
 export const COVER_PAD_Y = 2
 
-/** 元の文字を消す範囲(訳文を表示している段落)を、CSS の clip-path に渡す形で返す。 */
+/** 元の文字を消す範囲(訳文を表示している断片)を、CSS の clip-path に渡す形で返す。 */
 export function coverClipPath(
-  units: readonly TranslationUnit[],
+  fragments: readonly PageFragment[],
   translations: Readonly<Record<string, UnitState>>,
   originals: ReadonlySet<string>,
   scale: number,
 ): string | null {
   const parts: string[] = []
-  for (const unit of units) {
+  for (const { unit, index } of fragments) {
     if (translations[unit.id]?.status !== 'done' || originals.has(unit.id)) continue
-    const left = (unit.rect.x - COVER_PAD_X) * scale
-    const top = (unit.rect.y - COVER_PAD_Y) * scale
-    const right = (unit.rect.x + unit.rect.width + COVER_PAD_X) * scale
-    const bottom = (unit.rect.y + unit.rect.height + COVER_PAD_Y) * scale
+    const rect = (unit.fragments[index] as UnitFragment).rect
+    const left = (rect.x - COVER_PAD_X) * scale
+    const top = (rect.y - COVER_PAD_Y) * scale
+    const right = (rect.x + rect.width + COVER_PAD_X) * scale
+    const bottom = (rect.y + rect.height + COVER_PAD_Y) * scale
     parts.push(`M${left} ${top}H${right}V${bottom}H${left}Z`)
   }
   return parts.length > 0 ? `path('${parts.join('')}')` : null

@@ -383,3 +383,12 @@ footer {
 .translation-marker.kept {
   outline: 1px dashed #c64600;
 }
+
+/* 訳文を収める設定を決めるための、見えない測定用の箱。 */
+.translation-measurer {
+  position: absolute;
+  top: 0;
+  left: -100000px;
+  visibility: hidden;
+  pointer-events: none;
+}

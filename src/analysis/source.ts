@@ -12,6 +12,8 @@ import type { Line, LineChar, MathSpan, Rect } from './types.ts'
 
 /** 数式の一部がページの上で占める範囲。数式が行をまたぐ場合は、行ごとに 1 つずつできる。 */
 export interface MathPart extends Rect {
+  /** この部分があるページの番号。訳文が段やページをまたぐと、数式は、もとのページとは別のページに表示されることがある。 */
+  pageNumber: number
   /** その行の本文の基準線の y 座標。訳文の中に置くときに、訳文の基準線と合わせる。 */
   baseline: number
 }
@@ -38,7 +40,7 @@ const PAD_Y = 0.8
  * 数式が行の上で占める範囲を求める。
  * measureInk を渡すと、字形の実際の範囲を使う。渡さない場合や測れない字形では、フォントの情報から決めた範囲を使う。
  */
-export function mathPartOf(line: Line, span: MathSpan, measureInk?: GlyphInkMeasurer): MathPart {
+export function mathPartOf(line: Line, span: MathSpan, measureInk?: GlyphInkMeasurer, pageNumber = 0): MathPart {
   let left = Infinity
   let right = -Infinity
   let top = Infinity
@@ -59,6 +61,7 @@ export function mathPartOf(line: Line, span: MathSpan, measureInk?: GlyphInkMeas
     }
   }
   return {
+    pageNumber,
     x: left - PAD_X,
     y: top - PAD_Y,
     width: right - left + 2 * PAD_X,
@@ -119,7 +122,7 @@ function piecesOf(line: Line): LinePieces {
  * 行と行は、空白 1 つでつなぐ。行末のハイフンで分かれた語は、ハイフンを除いてつなぎ直す。
  * 行の終わりの数式と、次の行の始まりの数式は、行をまたいだ 1 つの数式として、1 つの目印にまとめる。
  */
-export function buildTaggedSource(lines: readonly Line[], measureInk?: GlyphInkMeasurer): TaggedSource {
+export function buildTaggedSource(lines: readonly Line[], measureInk?: GlyphInkMeasurer, pageNumber = 0): TaggedSource {
   const slots: MathSlot[] = []
   let text = ''
   /** 直前に出力したものが数式なら、その数式。行をまたぐ数式をまとめるために覚えておく。 */
@@ -130,7 +133,7 @@ export function buildTaggedSource(lines: readonly Line[], measureInk?: GlyphInkM
     pieces.forEach((piece, index) => {
       const lineStart = index === 0
       if (piece.type === 'math') {
-        const part = mathPartOf(line, piece.span, measureInk)
+        const part = mathPartOf(line, piece.span, measureInk, pageNumber)
         const mathText = line.chars
           .slice(piece.span.start, piece.span.end)
           .map((char) => char.text)

@@ -52,6 +52,7 @@ const NO_PROGRESS: SessionProgress = {
   translating: false,
   preparedPages: 0,
   units: 0,
+  merged: 0,
   done: 0,
   cached: 0,
   failed: 0,
@@ -409,7 +410,7 @@ export function PdfViewer() {
               {translationError && <span className="error">{translationError}</span>}
               {startingTranslation && !translationError && '翻訳の準備をしています…'}
               {(progress.translating || hasTranslations) &&
-                `${progress.translating ? '翻訳しています' : '翻訳が終わりました'}: ${progress.done + progress.kept} / ${progress.units} 段落(${progress.preparedPages} / ${opened.document.numPages} ページを準備済み、依頼 ${progress.requests} 件、保存分の再利用 ${progress.cached} 件、失敗 ${progress.failed} 件、途中で切れた訳文 ${progress.truncated} 件、文ごとに訳し直した段落 ${progress.retried} 件、数式の目印がそろわず原文のまま ${progress.kept} 件)`}
+                `${progress.translating ? '翻訳しています' : '翻訳が終わりました'}: ${progress.done + progress.kept} / ${progress.units} 段落(${progress.preparedPages} / ${opened.document.numPages} ページを準備済み、段やページをまたいでつないだ段落 ${progress.merged} 件、依頼 ${progress.requests} 件、保存分の再利用 ${progress.cached} 件、失敗 ${progress.failed} 件、途中で切れた訳文 ${progress.truncated} 件、文ごとに訳し直した段落 ${progress.retried} 件、数式の目印がそろわず原文のまま ${progress.kept} 件)`}
             </span>
           </section>
 

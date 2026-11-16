@@ -4,11 +4,17 @@
  * ページの解析と検出は、画面の描画とは切り離して行う。
  * 画面に出ていないページも、先に解析して翻訳を依頼できるようにするためである。
  * 画面の部品は、subscribe で変化を受け取り、getPage でページごとの状態を読む。
+ *
+ * 翻訳単位は、2 段階で作る。
+ *   1. ページごとに、段落から翻訳単位を作る(units.ts)。
+ *   2. 前後のページの翻訳単位がそろったら、段やページをまたいで続く段落をつなぐ(chains.ts)。
+ * つないだ翻訳単位は、複数のページに断片を持つことがある。
  */
 
 import type { PDFDocumentProxy } from 'pdfjs-dist'
 import { analyzePage } from '../analysis/analyzePage.ts'
 import type { PageAnalysis } from '../analysis/analyzePage.ts'
+import { linkPage } from '../analysis/chains.ts'
 import { buildUnits } from '../analysis/units.ts'
 import type { TranslationUnit } from '../analysis/units.ts'
 import type { LayoutDetector } from '../layout/ortWebClient.ts'
@@ -26,6 +32,12 @@ import { translateTagged } from '../translate/tagged.ts'
 
 /** 1 つの翻訳単位の訳文の長さの上限(トークン数)。 */
 const MAX_TOKENS = 1024
+
+/**
+ * 数式を切り抜くもとになるページの画像の細かさ。1 ポイントあたりの画素数。
+ * 表示の倍率 150%、画面の解像度 2 倍のときに、表示と同じ細かさになる値。
+ */
+const PAGE_IMAGE_SCALE = 3
 
 /**
  * 翻訳単位の状態。
@@ -50,13 +62,22 @@ export interface UnitState {
   error?: string
 }
 
+/** ページに表示する、翻訳単位の断片 1 つ。 */
+export interface PageFragment {
+  unit: TranslationUnit
+  /** unit.fragments の中での番号。 */
+  index: number
+}
+
 export interface PageState {
   analysis: PageAnalysis | null
   /** レイアウト検出の結果。検出していない間は null。 */
   regions: LayoutRegion[] | null
-  /** 翻訳単位。検出が終わるまでは null。 */
-  units: TranslationUnit[] | null
-  /** 翻訳単位の名前(id)ごとの、翻訳の状態。 */
+  /** このページの段落から作った翻訳単位(段やページをまたぐ段落をつなぐ前)。検出が終わるまでは null。 */
+  rawUnits: TranslationUnit[] | null
+  /** このページに表示する断片。前のページから続く段落の断片を含む。 */
+  fragments: readonly PageFragment[]
+  /** fragments に含まれる翻訳単位の、名前(id)ごとの翻訳の状態。 */
   translations: Readonly<Record<string, UnitState>>
 }
 
@@ -70,9 +91,11 @@ export interface SessionProgress {
   detectTimes: readonly number[]
   /** 翻訳を依頼している最中(待っている単位がある)なら true。 */
   translating: boolean
-  /** 翻訳単位を組み立て終えたページの数。 */
+  /** 翻訳単位を確定し終えたページの数。 */
   preparedPages: number
   units: number
+  /** units のうち、段やページをまたぐ段落をつないだもの。 */
+  merged: number
   done: number
   /** done のうち、保存してあった訳文を使った数。 */
   cached: number
@@ -86,13 +109,15 @@ export interface SessionProgress {
   requests: number
 }
 
-const EMPTY_PAGE: PageState = { analysis: null, regions: null, units: null, translations: {} }
+const EMPTY_PAGE: PageState = { analysis: null, regions: null, rawUnits: null, fragments: [], translations: {} }
 
 interface ActiveTranslation {
   backend: TranslatorBackend
   modelId: string
   cache: TranslationCache
   queue: PriorityQueue<TranslationUnit>
+  /** 翻訳単位を順番待ちに入れ終えたページ。 */
+  enqueued: Set<number>
   /** すべてのページの翻訳単位を組み立て終えたら true。 */
   prepared: boolean
 }
@@ -109,6 +134,18 @@ function requestFor(unit: TranslationUnit): TranslateRequest {
   return requestForSource(unit.source)
 }
 
+/**
+ * ページを準備する順番。値が小さいほど先。
+ * 翻訳単位を確定するには前後のページが要るので、表示中のページの次に、その前後のページを準備する。
+ */
+export function preparePriority(pageNumber: number, focusPage: number): number {
+  const distance = pageNumber - focusPage
+  if (distance === 0) return 0
+  if (distance === 1) return 1
+  if (distance === -1) return 2
+  return distance > 0 ? distance + 1 : 1_000_000 - distance
+}
+
 export class DocumentSession {
   readonly document: PDFDocumentProxy
   private readonly pages = new Map<number, PageState>()
@@ -116,6 +153,10 @@ export class DocumentSession {
   private readonly analysisPromises = new Map<number, Promise<PageAnalysis>>()
   private layoutPromises = new Map<number, Promise<void>>()
   private detectTimes = new Map<number, number>()
+  /** ページごとの、確定した翻訳単位。そのページから始まる翻訳単位を持つ。 */
+  private linked = new Map<number, TranslationUnit[]>()
+  /** 翻訳単位の名前(id)ごとの、翻訳の状態。 */
+  private unitStates = new Map<string, UnitState>()
   private detector: LayoutDetector | null = null
   private translation: ActiveTranslation | null = null
   private progress: SessionProgress | null = null
@@ -125,6 +166,12 @@ export class DocumentSession {
   private disposed = false
   /** 字形の実際の範囲を測る関数。数式の範囲を決めるときに使う。 */
   private readonly measureInk: GlyphInkMeasurer = createCanvasInkMeasurer()
+  /** ページ番号ごとの、ページの画像の URL。数式を切り抜くもとになる。 */
+  private images: ReadonlyMap<number, string> = new Map()
+  private readonly imageRequests = new Set<number>()
+  private imageQueue: Promise<void> = Promise.resolve()
+  /** 原文の表示に切り替えている翻訳単位の名前。 */
+  private originals: ReadonlySet<string> = new Set()
 
   constructor(document: PDFDocumentProxy) {
     this.document = document
@@ -145,11 +192,18 @@ export class DocumentSession {
     this.emit()
   }
 
+  /** 翻訳単位の状態を変える。その翻訳単位の断片があるすべてのページに反映する。 */
   private updateUnit(unit: TranslationUnit, state: UnitState | undefined): void {
-    const translations = { ...this.getPage(unit.pageNumber).translations }
-    if (state) translations[unit.id] = state
-    else delete translations[unit.id]
-    this.update(unit.pageNumber, { translations })
+    if (this.disposed) return
+    if (state) this.unitStates.set(unit.id, state)
+    else this.unitStates.delete(unit.id)
+    for (const pageNumber of new Set(unit.fragments.map((fragment) => fragment.pageNumber))) {
+      const translations = { ...this.getPage(pageNumber).translations }
+      if (state) translations[unit.id] = state
+      else delete translations[unit.id]
+      this.pages.set(pageNumber, { ...this.getPage(pageNumber), translations })
+    }
+    this.emit()
   }
 
   private emit(): void {
@@ -167,8 +221,9 @@ export class DocumentSession {
       mathSpans: 0,
       detectTimes: [...this.detectTimes.values()],
       translating: this.translation !== null && (!this.translation.prepared || this.translation.queue.size > 0),
-      preparedPages: 0,
+      preparedPages: this.linked.size,
       units: 0,
+      merged: 0,
       done: 0,
       cached: 0,
       failed: 0,
@@ -178,27 +233,26 @@ export class DocumentSession {
       requests: this.requests,
     }
     for (const page of this.pages.values()) {
-      if (page.analysis) {
-        progress.analyzedPages += 1
-        progress.paragraphs += page.analysis.paragraphs.length
-        progress.lines += page.analysis.lines.length
-        progress.mathSpans += page.analysis.lines.reduce((sum, line) => sum + line.spans.length, 0)
-      }
-      if (page.units) {
-        progress.preparedPages += 1
-        progress.units += page.units.length
-      }
-      for (const state of Object.values(page.translations)) {
-        if (state.status === 'done') {
-          progress.done += 1
-          if (state.fromCache) progress.cached += 1
-          if (state.truncated) progress.truncated += 1
-          if (state.retried) progress.retried += 1
-        } else if (state.status === 'failed') {
-          progress.failed += 1
-        } else if (state.status === 'kept') {
-          progress.kept += 1
-        }
+      if (!page.analysis) continue
+      progress.analyzedPages += 1
+      progress.paragraphs += page.analysis.paragraphs.length
+      progress.lines += page.analysis.lines.length
+      progress.mathSpans += page.analysis.lines.reduce((sum, line) => sum + line.spans.length, 0)
+    }
+    for (const units of this.linked.values()) {
+      progress.units += units.length
+      progress.merged += units.filter((unit) => unit.fragments.length > 1).length
+    }
+    for (const state of this.unitStates.values()) {
+      if (state.status === 'done') {
+        progress.done += 1
+        if (state.fromCache) progress.cached += 1
+        if (state.truncated) progress.truncated += 1
+        if (state.retried) progress.retried += 1
+      } else if (state.status === 'failed') {
+        progress.failed += 1
+      } else if (state.status === 'kept') {
+        progress.kept += 1
       }
     }
     this.progress = progress
@@ -236,18 +290,16 @@ export class DocumentSession {
     this.detector = detector
     this.layoutPromises = new Map()
     this.detectTimes = new Map()
+    this.linked = new Map()
+    this.unitStates = new Map()
     for (const [pageNumber, page] of this.pages) {
-      this.pages.set(pageNumber, { ...page, regions: null, units: null, translations: {} })
+      this.pages.set(pageNumber, { ...page, regions: null, rawUnits: null, fragments: [], translations: {} })
     }
     this.emit()
   }
 
-  get hasDetector(): boolean {
-    return this.detector !== null
-  }
-
   /**
-   * ページの領域を検出し、翻訳単位を組み立てる。検出器が無い場合は何もしない。
+   * ページの領域を検出し、そのページの翻訳単位を組み立てる。検出器が無い場合は何もしない。
    * 検出には、表示とは別に、検出用の大きさで描画した画像を使う。表示の倍率で結果が変わらないようにするためである。
    */
   ensureLayout(pageNumber: number): Promise<void> {
@@ -269,13 +321,52 @@ export class DocumentSession {
         this.detectTimes.set(pageNumber, result.milliseconds)
         this.update(pageNumber, {
           regions: result.regions,
-          units: buildUnits(pageNumber, analysis.paragraphs, result.regions, this.measureInk),
+          rawUnits: buildUnits(pageNumber, analysis.paragraphs, result.regions, this.measureInk),
         })
       })()
       promises.set(pageNumber, promise)
       promise.catch(() => promises.delete(pageNumber))
     }
     return promise
+  }
+
+  /**
+   * ページの翻訳単位を確定する。段やページをまたいで続く段落を、1 つの翻訳単位につなぐ。
+   * 確定には、前後のページの翻訳単位が要る。そろっていなければ、何もせずに false を返す。
+   */
+  private tryLink(pageNumber: number): boolean {
+    const lastPage = this.document.numPages
+    if (pageNumber < 1 || pageNumber > lastPage) return false
+    if (this.linked.has(pageNumber)) return true
+    const raw = this.getPage(pageNumber).rawUnits
+    const previous = pageNumber > 1 ? this.getPage(pageNumber - 1).rawUnits : null
+    const next = pageNumber < lastPage ? this.getPage(pageNumber + 1).rawUnits : null
+    if (!raw || (pageNumber > 1 && !previous) || (pageNumber < lastPage && !next)) return false
+
+    this.linked.set(pageNumber, linkPage(previous, raw, next).units)
+    // このページから始まる翻訳単位は、このページと次のページに断片を持つ。
+    this.rebuildFragments(pageNumber)
+    this.rebuildFragments(pageNumber + 1)
+    return true
+  }
+
+  /** ページに表示する断片の一覧を作り直す。断片は、前のページとこのページから始まる翻訳単位が持つ。 */
+  private rebuildFragments(pageNumber: number): void {
+    if (pageNumber < 1 || pageNumber > this.document.numPages) return
+    const fragments: PageFragment[] = []
+    for (const owner of [pageNumber - 1, pageNumber]) {
+      for (const unit of this.linked.get(owner) ?? []) {
+        unit.fragments.forEach((fragment, index) => {
+          if (fragment.pageNumber === pageNumber) fragments.push({ unit, index })
+        })
+      }
+    }
+    const translations: Record<string, UnitState> = {}
+    for (const { unit } of fragments) {
+      const state = this.unitStates.get(unit.id)
+      if (state) translations[unit.id] = state
+    }
+    this.update(pageNumber, { fragments, translations })
   }
 
   /**
@@ -290,11 +381,12 @@ export class DocumentSession {
       backend,
       modelId: info.modelId,
       cache,
+      enqueued: new Set(),
       prepared: false,
       queue: new PriorityQueue<TranslationUnit>({
         // 同時に依頼する数は、サーバーが同時に処理できる数に合わせる。
         concurrency: info.slots,
-        priority: (unit) => pagePriority(unit.pageNumber, this.focusPage) * 1000 + unit.index,
+        priority: (unit) => pagePriority(unit.pageNumber, this.focusPage) * 1000 + unit.order / 1e7,
         worker: (unit, signal) => this.translateUnit(translation, unit, signal),
         onIdle: () => this.emit(),
       }),
@@ -305,14 +397,17 @@ export class DocumentSession {
     void this.prepareAll(translation)
   }
 
-  /** 表示中のページに近い順に、すべてのページの翻訳単位を組み立てて、順番待ちに入れる。 */
+  /**
+   * 表示中のページに近い順に、すべてのページの翻訳単位を組み立てる。
+   * 前後のページがそろって翻訳単位が確定したページから、順番待ちに入れる。
+   */
   private async prepareAll(translation: ActiveTranslation): Promise<void> {
     const remaining = new Set(Array.from({ length: this.document.numPages }, (_, index) => index + 1))
     while (remaining.size > 0 && this.translation === translation) {
       let next = 0
       let nextPriority = Infinity
       for (const pageNumber of remaining) {
-        const priority = pagePriority(pageNumber, this.focusPage)
+        const priority = preparePriority(pageNumber, this.focusPage)
         if (priority < nextPriority) {
           next = pageNumber
           nextPriority = priority
@@ -321,10 +416,17 @@ export class DocumentSession {
       remaining.delete(next)
       try {
         await this.ensureLayout(next)
-        if (this.translation !== translation) return
-        await this.enqueuePage(translation, next)
       } catch (error) {
         console.warn(`[session] ${next} ページ目の準備に失敗しました:`, error)
+        // 翻訳単位が無いページとして扱い、前後のページの確定を止めない。
+        if (this.translation === translation) this.update(next, { rawUnits: [] })
+      }
+      if (this.translation !== translation) return
+      for (const pageNumber of [next - 1, next, next + 1]) {
+        if (!this.tryLink(pageNumber) || translation.enqueued.has(pageNumber)) continue
+        translation.enqueued.add(pageNumber)
+        await this.enqueuePage(translation, pageNumber)
+        if (this.translation !== translation) return
       }
     }
     if (this.translation === translation) {
@@ -334,11 +436,9 @@ export class DocumentSession {
   }
 
   private async enqueuePage(translation: ActiveTranslation, pageNumber: number): Promise<void> {
-    const page = this.getPage(pageNumber)
     const fresh: TranslationUnit[] = []
-    for (const unit of page.units ?? []) {
-      const current = page.translations[unit.id]
-      if (current?.status === 'done') continue
+    for (const unit of this.linked.get(pageNumber) ?? []) {
+      if (this.unitStates.get(unit.id)?.status === 'done') continue
       const key = await cacheKey(translation.modelId, requestFor(unit))
       const saved = await translation.cache.get(key).catch(() => undefined)
       if (this.translation !== translation) return
@@ -414,12 +514,53 @@ export class DocumentSession {
     this.translation = null
     translation.queue.cancel()
     // 待っていた翻訳単位を、原文の表示に戻す。
-    for (const [pageNumber, page] of this.pages) {
-      const kept = Object.fromEntries(
-        Object.entries(page.translations).filter(([, state]) => state.status !== 'waiting' && state.status !== 'running'),
-      )
-      this.pages.set(pageNumber, { ...page, translations: kept })
+    for (const units of this.linked.values()) {
+      for (const unit of units) {
+        const status = this.unitStates.get(unit.id)?.status
+        if (status === 'waiting' || status === 'running') this.updateUnit(unit, undefined)
+      }
     }
+    this.emit()
+  }
+
+  /** ページ番号ごとの、ページの画像の URL。内容が変わるまで、同じオブジェクトを返す。 */
+  getImages = (): ReadonlyMap<number, string> => this.images
+
+  /**
+   * ページの画像を用意する。訳文の中に置く数式を、この画像から切り抜く。
+   * 段やページをまたぐ段落では、数式が、もとのページとは別のページに表示されることがある。
+   * そのため、画像は、ページの表示とは別に、ここで作って持つ。画像は 1 ページずつ順に作る。
+   */
+  ensurePageImage(pageNumber: number): void {
+    if (this.images.has(pageNumber) || this.imageRequests.has(pageNumber)) return
+    this.imageRequests.add(pageNumber)
+    this.imageQueue = this.imageQueue
+      .then(async () => {
+        if (this.disposed) return
+        const page = await this.document.getPage(pageNumber)
+        const canvas = globalThis.document.createElement('canvas')
+        await renderPage(page, canvas, { scale: PAGE_IMAGE_SCALE, outputScale: 1 }).promise
+        const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'))
+        canvas.width = 0
+        canvas.height = 0
+        if (!blob || this.disposed) return
+        this.images = new Map(this.images).set(pageNumber, URL.createObjectURL(blob))
+        this.emit()
+      })
+      .catch((error: unknown) => {
+        console.warn(`[session] ${pageNumber} ページ目の画像を作れませんでした:`, error)
+      })
+      .finally(() => this.imageRequests.delete(pageNumber))
+  }
+
+  /** 原文の表示に切り替えている翻訳単位の名前。内容が変わるまで、同じオブジェクトを返す。 */
+  getOriginals = (): ReadonlySet<string> => this.originals
+
+  /** 翻訳単位の表示を、訳文と原文の間で切り替える。断片が複数のページにある場合も、まとめて切り替わる。 */
+  toggleOriginal = (unitId: string): void => {
+    const next = new Set(this.originals)
+    if (!next.delete(unitId)) next.add(unitId)
+    this.originals = next
     this.emit()
   }
 
@@ -427,5 +568,6 @@ export class DocumentSession {
     this.stopTranslation()
     this.disposed = true
     this.listeners.clear()
+    for (const url of this.images.values()) URL.revokeObjectURL(url)
   }
 }

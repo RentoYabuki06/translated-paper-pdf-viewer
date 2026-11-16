@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Paragraph } from '../../src/analysis/types.ts'
 import { buildUnits } from '../../src/analysis/units.ts'
+import type { TranslationUnit } from '../../src/analysis/units.ts'
 import type { LayoutLabel, LayoutRegion } from '../../src/layout/types.ts'
 import { lineWithChars } from './helpers.ts'
 
@@ -20,6 +21,13 @@ function cover(label: LayoutLabel, target: Paragraph): LayoutRegion {
   return region(label, target.x - 2, target.y - 2, target.width + 4, target.height + 4)
 }
 
+/** 名前で翻訳単位を取り出す。名前は「p<ページ番号>-<段落の番号>」。 */
+function byId(units: TranslationUnit[], id: string): TranslationUnit {
+  const unit = units.find((candidate) => candidate.id === id)
+  if (!unit) throw new Error(`翻訳単位 ${id} がありません`)
+  return unit
+}
+
 describe('buildUnits', () => {
   it('訳す種類の段落だけを、翻訳単位にする', () => {
     const body = paragraph('Body text of the paper.', 50, 100, 200, 3)
@@ -34,9 +42,10 @@ describe('buildUnits', () => {
       source: 'Body text of the paper. … …',
       math: [],
       kind: 'text',
-      lineCount: 3,
       linePitch: 12,
     })
+    expect(units[0]?.fragments).toHaveLength(1)
+    expect(units[0]?.fragments[0]).toMatchObject({ pageNumber: 2, lineCount: 3, rect: { x: 50, y: 100, width: 200, height: 34 } })
   })
 
   it('数式が大半を占める段落と、英字の語を含まない段落を除く', () => {
@@ -64,16 +73,16 @@ describe('buildUnits', () => {
     const other = paragraph('Another column text.', 300, 110, 200, 2)
     const units = buildUnits(1, [first, second, other], [cover('text', first), cover('text', second), cover('text', other)])
     // first の下端は 122、second の上端は 150。すき間 3 ポイントを残す。
-    expect(units[0]?.maxHeight).toBe(150 - 3 - 100)
+    expect(byId(units, 'p1-0').fragments[0]?.maxHeight).toBe(150 - 3 - 100)
     // second の下には何も無いため、ページの中で最も下にある文字の位置まで。
-    expect(units[1]?.maxHeight).toBe(22)
+    expect(byId(units, 'p1-1').fragments[0]?.maxHeight).toBe(22)
   })
 
   it('図の領域を避ける', () => {
     const caption = paragraph('Figure 1. A caption text.', 50, 100, 200)
     const footer = paragraph('Footer text here', 50, 400, 100)
     const units = buildUnits(1, [caption, footer], [cover('figure_title', caption), cover('text', footer), region('image', 50, 130, 200, 100)])
-    expect(units[0]?.maxHeight).toBe(130 - 3 - 100)
+    expect(units[0]?.fragments[0]?.maxHeight).toBe(130 - 3 - 100)
   })
 
   it('1 行だけの段落は、右の空きも広げる', () => {
@@ -81,9 +90,76 @@ describe('buildUnits', () => {
     const body = paragraph('Body text of the section.', 50, 120, 230, 3)
     const rightColumn = paragraph('Right column text.', 300, 95, 230, 3)
     const units = buildUnits(1, [heading, body, rightColumn], [cover('paragraph_title', heading), cover('text', body), cover('text', rightColumn)])
-    expect(units[0]?.maxWidth).toBe(300 - 3 - 50)
+    expect(byId(units, 'p1-0').fragments[0]?.maxWidth).toBe(300 - 3 - 50)
     // 複数行の段落は、幅を広げない。
-    expect(units[1]?.maxWidth).toBe(230)
+    expect(byId(units, 'p1-1').fragments[0]?.maxWidth).toBe(230)
+  })
+
+  it('読む順に並べる。順番は、レイアウト検出の領域の順番で決まる', () => {
+    const left = paragraph('Left column text.', 50, 300, 200, 2)
+    const rightTop = paragraph('Right column text.', 300, 100, 200, 2)
+    const units = buildUnits(1, [rightTop, left], [
+      { ...cover('text', left), order: 5 },
+      { ...cover('text', rightTop), order: 9 },
+    ])
+    expect(units.map((unit) => unit.source)).toEqual(['Left column text. …', 'Right column text. …'])
+  })
+
+  it('段のいちばん上・いちばん下にあるかどうかを記録する。図や脚注は数えない', () => {
+    const top = paragraph('Top paragraph text.', 50, 100, 200, 2)
+    const bottomText = paragraph('Bottom paragraph text.', 50, 200, 200, 2)
+    const footnote = paragraph('A footnote text.', 50, 300, 200)
+    const other = paragraph('Other column text.', 300, 150, 200, 2)
+    const units = buildUnits(1, [top, bottomText, footnote, other], [
+      cover('text', top),
+      cover('text', bottomText),
+      cover('footnote', footnote),
+      cover('text', other),
+      region('image', 300, 50, 200, 80),
+    ])
+    expect([byId(units, 'p1-0').atColumnTop, byId(units, 'p1-0').atColumnBottom]).toEqual([true, false])
+    // 下にあるのは脚注だけなので、段のいちばん下とみなす。
+    expect([byId(units, 'p1-1').atColumnTop, byId(units, 'p1-1').atColumnBottom]).toEqual([false, true])
+    // 上にあるのは図だけなので、段のいちばん上とみなす。
+    expect([byId(units, 'p1-3').atColumnTop, byId(units, 'p1-3').atColumnBottom]).toEqual([true, true])
+  })
+
+  it('2 つの段にまたがる題名は、段のいちばん上の判定に数えない', () => {
+    // 題名は x が 125 から 425 で、左の段(50 から 250)と右の段(300 から 500)の両方に重なる。
+    // 題名の中心(275)は、2 つの段の間にある。
+    const title = paragraph('A Title Spanning Both Columns', 125, 40, 300)
+    const left = paragraph('Left column first paragraph.', 50, 100, 200, 3)
+    const rightTop = paragraph('Right column first paragraph.', 300, 100, 200, 3)
+    const units = buildUnits(1, [title, left, rightTop], [cover('doc_title', title), cover('text', left), cover('text', rightTop)])
+    expect(byId(units, 'p1-1').atColumnTop).toBe(true)
+    expect(byId(units, 'p1-2').atColumnTop).toBe(true)
+  })
+
+  it('同じ段の幅の広い段落の下にある短い段落は、段のいちばん上としない', () => {
+    const wide = paragraph('A wide paragraph of the column.', 50, 100, 200, 3)
+    const shortLine = paragraph('short line', 50, 150, 60)
+    const units = buildUnits(1, [wide, shortLine], [cover('text', wide), cover('text', shortLine)])
+    expect(byId(units, 'p1-1').atColumnTop).toBe(false)
+    expect(byId(units, 'p1-0').atColumnBottom).toBe(false)
+  })
+
+  it('最後の行が段の右端まで届いているかどうかを記録する', () => {
+    const full = paragraph('A paragraph whose last line is full.', 50, 100, 200, 3)
+    const short = paragraph('A paragraph whose last line is short.', 50, 200, 200, 3)
+    const lastLine = short.lines.at(-1)
+    if (lastLine) lastLine.width = 80
+    const units = buildUnits(1, [full, short], [cover('text', full), cover('text', short)])
+    expect(byId(units, 'p1-0').lastLineFull).toBe(true)
+    expect(byId(units, 'p1-1').lastLineFull).toBe(false)
+  })
+
+  it('1 行だけの段落では、同じ段のほかの段落の幅から、行が右端まで届いているかを判定する', () => {
+    const body = paragraph('A wide body paragraph of the column.', 50, 100, 200, 3)
+    const fullLine = paragraph('one full line at the column bottom', 50, 150, 195)
+    const shortLine = paragraph('short line', 50, 180, 60)
+    const units = buildUnits(1, [body, fullLine, shortLine], [cover('text', body), cover('text', fullLine), cover('text', shortLine)])
+    expect(byId(units, 'p1-1').lastLineFull).toBe(true)
+    expect(byId(units, 'p1-2').lastLineFull).toBe(false)
   })
 
   it('1 行目の字下げを記録する', () => {
@@ -91,6 +167,6 @@ describe('buildUnits', () => {
     const firstLine = indented.lines[0]
     if (firstLine) firstLine.x = 65
     const units = buildUnits(1, [indented], [cover('text', indented)])
-    expect(units[0]?.indented).toBe(true)
+    expect(units[0]?.fragments[0]?.indented).toBe(true)
   })
 })
