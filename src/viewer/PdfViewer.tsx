@@ -170,6 +170,8 @@ export function PdfViewer({ onOpenGlossary }: Props) {
   /** 開く操作の通し番号。あとから始めた操作だけを画面に反映するために使う。 */
   const openSequence = useRef(0)
   const openedRef = useRef<Opened | null>(null)
+  /** 翻訳を自動で始めた PDF。同じ PDF で、2 度始めないために使う。 */
+  const autoStarted = useRef<DocumentSession | null>(null)
 
   // 画面を閉じるときに、開いている PDF を解放する。
   useEffect(
@@ -430,6 +432,18 @@ export function PdfViewer({ onOpenGlossary }: Props) {
   const glossaryChanged =
     translatedGlossary !== null && translatedGlossary !== glossarySignature && !progress.translating && !startingTranslation
 
+  /** 翻訳を始め直すボタンを出すかどうか。中止したとき、始められなかったとき、用語集が変わったときに出す。 */
+  const needsRestart =
+    !startingTranslation && (progress.stopped || translationError !== null || detectorState.state === 'error' || glossaryChanged)
+
+  // PDF を開いたら、翻訳を自動で始める。解析結果を確かめる画面(?debug)では、始めない。
+  useEffect(() => {
+    if (!opened || DEBUG || autoStarted.current === opened.session) return
+    autoStarted.current = opened.session
+    void startTranslation()
+    // 開いた PDF が替わったときだけ動かす。
+  }, [opened])
+
   const summary = opened && (progress.translating || hasTranslations) ? describeProgress(progress, opened.document.numPages) : null
   /** 操作の帯の下に出す、状態の表示。出すものが無ければ、行そのものを出さない。 */
   const statusNodes: ReactNode[] = []
@@ -487,7 +501,7 @@ export function PdfViewer({ onOpenGlossary }: Props) {
     statusNodes.push(
       <span key="glossary" className="notice">
         {' '}
-        用語集が変わりました。「この PDF を翻訳する」を押すと、訳語の指定が変わる段落だけを訳し直します。
+        用語集が変わりました。「{DEBUG ? 'この PDF を翻訳する' : '訳し直す'}」を押すと、訳語の指定が変わる段落だけを訳し直します。
       </span>,
     )
   }
@@ -546,9 +560,12 @@ export function PdfViewer({ onOpenGlossary }: Props) {
                 中止
               </button>
             ) : (
-              <button type="button" className="primary" onClick={() => void startTranslation()} disabled={startingTranslation}>
-                この PDF を翻訳する
-              </button>
+              // 翻訳は、PDF を開いたときに自動で始まる。ボタンは、やり直す理由があるときだけ出す。
+              (DEBUG || needsRestart) && (
+                <button type="button" className="primary" onClick={() => void startTranslation()} disabled={startingTranslation}>
+                  {DEBUG ? 'この PDF を翻訳する' : glossaryChanged ? '訳し直す' : '翻訳を再開'}
+                </button>
+              )
             )}
             {hasTranslations && (
               <label>
@@ -556,8 +573,8 @@ export function PdfViewer({ onOpenGlossary }: Props) {
                 訳文を表示
               </label>
             )}
-            <label>
-              <input type="checkbox" checked={sideBySide} onChange={(event) => setSideBySide(event.target.checked)} />
+            <label className="switch">
+              <input type="checkbox" role="switch" checked={sideBySide} onChange={(event) => setSideBySide(event.target.checked)} />
               原文を左に並べる
             </label>
             <label>
