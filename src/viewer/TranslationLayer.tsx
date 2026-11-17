@@ -17,6 +17,7 @@ import type { TranslationUnit, UnitFragment } from '../analysis/units.ts'
 import type { Atom } from '../overlay/atoms.ts'
 import { layoutUnit, usesFreeWidth } from '../overlay/layout.ts'
 import { spriteStyle } from '../overlay/sprite.ts'
+import { describeEntries } from '../translate/glossary.ts'
 import type { PageFragment, UnitState } from './session.ts'
 
 interface Props {
@@ -74,6 +75,16 @@ function renderAtoms(
   return nodes
 }
 
+/** 訳文にマウスを重ねたときに表示する文字列。用語集の項目を付けた段落では、その項目も表示する。 */
+function glossaryTitle(state: UnitState): string {
+  const base = 'クリックで原文を表示'
+  if (state.glossary.length === 0) return base
+  const entries = describeEntries(state.glossary)
+  return state.glossaryDropped
+    ? `${base}\n用語集(${entries})を付けると、数式の目印がそろわなかったため、付けずに訳しました`
+    : `${base}\n用語集: ${entries}`
+}
+
 /** 翻訳単位の断片 1 つ分の訳文。 */
 function TranslationBox({ unit, index, state, images, requestImage, pageWidth, pageHeight, onToggle }: BoxProps) {
   const fragment = unit.fragments[index] as UnitFragment
@@ -109,7 +120,9 @@ function TranslationBox({ unit, index, state, images, requestImage, pageWidth, p
       data-unit={unit.id}
       data-fragment={`${index + 1}/${unit.fragments.length}`}
       data-retried={state.retried ? 'true' : undefined}
-      title="クリックで原文を表示"
+      data-glossary={state.glossary.length > 0 ? state.glossary.length : undefined}
+      data-glossary-dropped={state.glossaryDropped ? 'true' : undefined}
+      title={glossaryTitle(state)}
       onClick={() => onToggle(unit.id)}
       style={{
         left: fragment.rect.x,

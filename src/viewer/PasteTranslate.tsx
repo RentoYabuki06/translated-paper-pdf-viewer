@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { mapWithConcurrency } from '../lib/pool.ts'
-import type { StopReason } from '../translate/backend.ts'
+import type { StopReason, TranslateRequest } from '../translate/backend.ts'
+import { createGlossaryMatcher, describeEntries } from '../translate/glossary.ts'
+import type { GlossaryEntry } from '../translate/pfml3.ts'
 import { describeTarget } from '../translate/settings.ts'
 import { splitParagraphs } from '../translate/splitParagraphs.ts'
+import { useGlossary } from './glossaryContext.ts'
 import { useTranslator } from './translatorContext.ts'
 
 /** 1 段落の訳文の長さの上限(トークン数)。実験用のコマンドと同じ値。 */
@@ -22,6 +25,8 @@ interface ParagraphState {
   source: string
   translation: string
   status: ParagraphStatus
+  /** 依頼に付ける用語集の項目。この段落に出てくる語のものだけが入る。 */
+  glossary: readonly GlossaryEntry[]
   stopReason?: StopReason
   outputTokens?: number | null
   error?: string
@@ -47,10 +52,13 @@ const STATUS_LABEL: Record<ParagraphStatus, string> = {
 interface Props {
   /** 翻訳サーバーの設定の画面を開く。 */
   onOpenServerSettings: () => void
+  /** 用語集の画面を開く。 */
+  onOpenGlossary: () => void
 }
 
-export function PasteTranslate({ onOpenServerSettings }: Props) {
+export function PasteTranslate({ onOpenServerSettings, onOpenGlossary }: Props) {
   const translator = useTranslator()
+  const glossary = useGlossary()
   /** 翻訳を始められなかった理由。 */
   const [startError, setStartError] = useState<string | null>(null)
   const [sourceText, setSourceText] = useState(SAMPLE_TEXT)
@@ -70,10 +78,14 @@ export function PasteTranslate({ onOpenServerSettings }: Props) {
     const sources = splitParagraphs(sourceText)
     if (sources.length === 0) return
 
+    // 段落ごとに、その段落に出てくる語の項目だけを、依頼に付ける。
+    const selectGlossary = createGlossaryMatcher(glossary.entries)
+    const selected = sources.map(selectGlossary)
+
     setRunning(true)
     setSummary(null)
     setStartError(null)
-    setParagraphs(sources.map((source) => ({ source, translation: '', status: 'waiting' })))
+    setParagraphs(sources.map((source, index) => ({ source, translation: '', status: 'waiting', glossary: selected[index] ?? [] })))
 
     // 翻訳サーバーに接続できることを、先に確かめる。設定は「翻訳サーバー」の画面のものを使う。
     const connected = await translator.check()
@@ -98,10 +110,13 @@ export function PasteTranslate({ onOpenServerSettings }: Props) {
       }
       updateParagraph(index, { status: 'running' })
       try {
-        const result = await backend.translate(
-          { source, sourceLang: 'en', targetLang: 'ja', form: 'plain', maxTokens: MAX_TOKENS },
-          { signal: controller.signal, onText: (translation) => updateParagraph(index, { translation }) },
-        )
+        const request: TranslateRequest = { source, sourceLang: 'en', targetLang: 'ja', form: 'plain', maxTokens: MAX_TOKENS }
+        const entries = selected[index] ?? []
+        if (entries.length > 0) request.glossary = entries
+        const result = await backend.translate(request, {
+          signal: controller.signal,
+          onText: (translation) => updateParagraph(index, { translation }),
+        })
         outputTokens += result.outputTokens ?? 0
         updateParagraph(index, {
           translation: result.text,
@@ -135,6 +150,10 @@ export function PasteTranslate({ onOpenServerSettings }: Props) {
           <span className="status">依頼先: {describeTarget(translator.settings)}</span>
           <button type="button" onClick={onOpenServerSettings} disabled={running}>
             設定
+          </button>
+          <span className="status">用語集: {glossary.entries.length} 語</span>
+          <button type="button" onClick={onOpenGlossary} disabled={running}>
+            用語集
           </button>
         </div>
         {startError && (
@@ -190,6 +209,7 @@ export function PasteTranslate({ onOpenServerSettings }: Props) {
                   )}
                   {paragraph.error && <span className="error"> {paragraph.error}</span>}
                 </p>
+                {paragraph.glossary.length > 0 && <p className="status">用語集: {describeEntries(paragraph.glossary)}</p>}
               </div>
             </article>
           ))}

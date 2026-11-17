@@ -21,6 +21,11 @@ export interface CachedTranslation {
   text: string
   /** 保存した時刻(ミリ秒)。 */
   savedAt: number
+  /**
+   * 用語集を付けた依頼の鍵で保存してあるが、訳文は、用語集を付けずに訳したものである場合に true。
+   * 用語集を付けると数式の目印がそろわなかった段落で、こうなる(session.ts)。
+   */
+  withoutGlossary?: boolean
 }
 
 /** 保存と取り出しに使う鍵の、もとになる文字列。 */

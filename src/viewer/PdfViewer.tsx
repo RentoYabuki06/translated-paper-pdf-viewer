@@ -4,7 +4,7 @@
  */
 
 import type { PDFDocumentProxy } from 'pdfjs-dist'
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { DragEvent, FormEvent } from 'react'
 import { LayoutDetector, MODEL_BYTES } from '../layout/ortWebClient.ts'
 import type { LayoutBackend } from '../layout/types.ts'
@@ -13,6 +13,7 @@ import { arxivPdfUrl, parseArxivId } from '../pdf/arxiv.ts'
 import { loadPdf } from '../pdf/pdfjs.ts'
 import { openTranslationCache } from '../translate/cache.ts'
 import { describeTarget } from '../translate/settings.ts'
+import { useGlossary } from './glossaryContext.ts'
 import { PageView } from './PageView.tsx'
 import type { PageSize } from './PageView.tsx'
 import { DocumentSession } from './session.ts'
@@ -60,6 +61,9 @@ const NO_PROGRESS: SessionProgress = {
   retried: 0,
   truncated: 0,
   requests: 0,
+  glossaryTerms: 0,
+  glossaryUnits: 0,
+  glossaryDropped: 0,
 }
 
 const noSubscription = () => () => undefined
@@ -74,10 +78,17 @@ function messageOf(error: unknown): string {
 interface Props {
   /** 翻訳サーバーの設定の画面を開く。 */
   onOpenServerSettings: () => void
+  /** 用語集の画面を開く。 */
+  onOpenGlossary: () => void
 }
 
-export function PdfViewer({ onOpenServerSettings }: Props) {
+export function PdfViewer({ onOpenServerSettings, onOpenGlossary }: Props) {
   const translator = useTranslator()
+  const glossary = useGlossary()
+  /** いまの用語集の内容を表す文字列。翻訳を始めたときの用語集と比べるために使う。 */
+  const glossarySignature = useMemo(() => JSON.stringify(glossary.entries), [glossary.entries])
+  /** 開いている PDF の翻訳を最後に始めたときの、用語集の内容。まだ翻訳していなければ null。 */
+  const [translatedGlossary, setTranslatedGlossary] = useState<string | null>(null)
   const [opened, setOpened] = useState<Opened | null>(null)
   const [status, setStatus] = useState<Status>({ state: 'idle' })
   const [arxivInput, setArxivInput] = useState('')
@@ -146,6 +157,9 @@ export function PdfViewer({ onOpenServerSettings }: Props) {
   async function startTranslation(): Promise<void> {
     const session = openedRef.current?.session
     if (!session) return
+    // ボタンを押した時点の用語集を使う。準備の間に用語集を編集しても、今回の翻訳には反映しない。
+    const entries = glossary.entries
+    const signature = glossarySignature
     setTranslationError(null)
     setStartingTranslation(true)
     try {
@@ -163,7 +177,8 @@ export function PdfViewer({ onOpenServerSettings }: Props) {
       // 訳文を読みやすくするため、確認用の枠を消す。
       setXray({ paragraphs: false, lines: false, runs: false, math: false, regions: false })
       setShowTranslations(true)
-      session.startTranslation(connected.backend, connected.info, cache)
+      session.startTranslation(connected.backend, connected.info, cache, entries)
+      setTranslatedGlossary(signature)
     } catch (error) {
       setTranslationError(messageOf(error))
     } finally {
@@ -190,6 +205,7 @@ export function PdfViewer({ onOpenServerSettings }: Props) {
       const next = { name, document, session, firstPageSize: { width: viewport.width, height: viewport.height } }
       openedRef.current = next
       setTranslationError(null)
+      setTranslatedGlossary(null)
       setOpened(next)
       setStatus({ state: 'idle' })
     } catch (error) {
@@ -253,6 +269,9 @@ export function PdfViewer({ onOpenServerSettings }: Props) {
   const times = progress.detectTimes
   const detector = detectorState.state === 'ready' ? detectorState.detector : null
   const hasTranslations = progress.done > 0 || progress.failed > 0 || progress.kept > 0
+  /** 翻訳を始めたあとで、用語集が変わっている場合に true。 */
+  const glossaryChanged =
+    translatedGlossary !== null && translatedGlossary !== glossarySignature && !progress.translating && !startingTranslation
 
   return (
     <div
@@ -389,6 +408,9 @@ export function PdfViewer({ onOpenServerSettings }: Props) {
               <button type="button" onClick={onOpenServerSettings} disabled={progress.translating || startingTranslation}>
                 設定
               </button>
+              <button type="button" onClick={onOpenGlossary}>
+                用語集({glossary.entries.length} 語)
+              </button>
               {progress.translating ? (
                 <button type="button" onClick={() => opened.session.stopTranslation()}>
                   中止
@@ -413,7 +435,15 @@ export function PdfViewer({ onOpenServerSettings }: Props) {
               {translationError && <span className="error">{translationError}</span>}
               {startingTranslation && !translationError && '翻訳の準備をしています…'}
               {(progress.translating || hasTranslations) &&
-                `${progress.translating ? '翻訳しています' : '翻訳が終わりました'}: ${progress.done + progress.kept} / ${progress.units} 段落(${progress.preparedPages} / ${opened.document.numPages} ページを準備済み、段やページをまたいでつないだ段落 ${progress.merged} 件、依頼 ${progress.requests} 件、保存分の再利用 ${progress.cached} 件、失敗 ${progress.failed} 件、途中で切れた訳文 ${progress.truncated} 件、文ごとに訳し直した段落 ${progress.retried} 件、数式の目印がそろわず原文のまま ${progress.kept} 件)`}
+                `${progress.translating ? '翻訳しています' : '翻訳が終わりました'}: ${progress.done + progress.kept} / ${progress.units} 段落(${progress.preparedPages} / ${opened.document.numPages} ページを準備済み、段やページをまたいでつないだ段落 ${progress.merged} 件、依頼 ${progress.requests} 件、保存分の再利用 ${progress.cached} 件、失敗 ${progress.failed} 件、途中で切れた訳文 ${progress.truncated} 件、文ごとに訳し直した段落 ${progress.retried} 件、数式の目印がそろわず原文のまま ${progress.kept} 件${
+                  progress.glossaryTerms > 0 ? `、用語集の語が出てくる段落 ${progress.glossaryUnits} 件` : ''
+                }${progress.glossaryDropped > 0 ? `、うち用語集を付けずに訳し直した段落 ${progress.glossaryDropped} 件` : ''})`}
+              {glossaryChanged && (
+                <span className="notice">
+                  {' '}
+                  用語集が変わりました。「この PDF を翻訳する」を押すと、訳語の指定が変わる段落だけを訳し直します。
+                </span>
+              )}
             </span>
           </section>
 

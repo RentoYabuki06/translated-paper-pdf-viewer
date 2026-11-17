@@ -17,6 +17,17 @@ describe('cacheKey', () => {
     expect(await cacheKey('plamo', { ...request, maxTokens: 512 })).not.toBe(base)
   })
 
+  it('用語集を付けると、鍵が変わる。空の用語集は、付けない場合と同じ鍵になる', async () => {
+    const base = await cacheKey('plamo', request)
+    const glossary = [{ source: 'Hello', target: 'こんにちは' }]
+    expect(await cacheKey('plamo', { ...request, glossary })).not.toBe(base)
+    expect(await cacheKey('plamo', { ...request, glossary: [{ source: 'Hello', target: 'やあ' }] })).not.toBe(
+      await cacheKey('plamo', { ...request, glossary }),
+    )
+    // 用語集の語が出てこない段落では、用語集を変えても、保存した訳文をそのまま使える。
+    expect(await cacheKey('plamo', { ...request, glossary: [] })).toBe(base)
+  })
+
   it('鍵のもとになる文字列に、依頼の文字列全体を含める', () => {
     expect(cacheKeySource('plamo', request)).toContain('Hello.')
   })

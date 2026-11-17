@@ -482,3 +482,49 @@ footer {
 .warnings {
   color: light-dark(#8a5a00, #f8e45c);
 }
+
+/* 用語集の画面。 */
+.glossary {
+  width: 100%;
+  max-width: 48rem;
+  border-collapse: collapse;
+  /* 語の欄と訳語の欄を、同じ幅にする。 */
+  table-layout: fixed;
+}
+
+.glossary th {
+  padding: 0 0.5rem 0.25rem 0;
+  text-align: left;
+  font-weight: 600;
+}
+
+.glossary td {
+  padding: 0.2rem 0.5rem 0.2rem 0;
+  vertical-align: top;
+}
+
+.glossary input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.glossary .actions {
+  width: 4.5rem;
+  white-space: nowrap;
+}
+
+/* 画面には出さず、読み上げにだけ使う文字。 */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* 利用者に、次の操作を知らせる表示。 */
+.notice {
+  color: light-dark(#8a5a00, #f8e45c);
+}

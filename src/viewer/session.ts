@@ -26,10 +26,12 @@ import type { GlyphInkMeasurer } from '../pdf/glyphInk.ts'
 import { renderPage } from '../pdf/render.ts'
 import type { BackendInfo, TranslateRequest, TranslatorBackend } from '../translate/backend.ts'
 import { cacheKey } from '../translate/cache.ts'
-import type { TranslationCache } from '../translate/cache.ts'
+import type { CachedTranslation, TranslationCache } from '../translate/cache.ts'
 import { buildContexts } from '../translate/context.ts'
+import { createGlossaryMatcher } from '../translate/glossary.ts'
+import type { GlossaryEntry } from '../translate/pfml3.ts'
 import { pagePriority, PriorityQueue } from '../translate/queue.ts'
-import { translateTagged } from '../translate/tagged.ts'
+import { translateTaggedWithGlossary } from '../translate/tagged.ts'
 
 /** 1 つの翻訳単位の訳文の長さの上限(トークン数)。 */
 const MAX_TOKENS = 1024
@@ -54,13 +56,22 @@ export interface UnitState {
   status: UnitStatus
   /** 訳文。status が 'done' のときだけ意味を持つ。 */
   text: string
-  /** 保存してあった訳文を使った場合に true。 */
+  /** 今回の翻訳で、依頼せずに、すでにある訳文(保存してあったもの、または前の翻訳で得たもの)を使った場合に true。 */
   fromCache: boolean
   /** 長さの上限に達して、訳文が途中で切れている場合に true。 */
   truncated: boolean
   /** 文ごとに訳し直した場合に true。 */
   retried?: boolean
   error?: string
+  /** この翻訳単位の原文に出てくる語の、用語集の項目。無ければ、空の配列。 */
+  glossary: readonly GlossaryEntry[]
+  /**
+   * 用語集を付けた依頼では、訳文の中の数式の目印がそろわず、用語集を付けずに訳し直した場合に true。
+   * このとき、訳文には、用語集の訳語の指定は反映されていない。
+   */
+  glossaryDropped?: boolean
+  /** 訳文を得た依頼の鍵(cache.ts)。status が 'done' のときだけ持つ。同じ依頼をやり直さないために使う。 */
+  key?: string
 }
 
 /** ページに表示する、翻訳単位の断片 1 つ。 */
@@ -106,8 +117,14 @@ export interface SessionProgress {
   /** done のうち、文ごとに訳し直して目印がそろった数。 */
   retried: number
   truncated: number
-  /** 今回の翻訳で、llama-server へ依頼した数。 */
+  /** 今回の翻訳で、翻訳サーバーへ依頼した数。 */
   requests: number
+  /** 今回の翻訳で使った用語集の項目の数。 */
+  glossaryTerms: number
+  /** 原文に、用語集の語が出てくる翻訳単位の数。 */
+  glossaryUnits: number
+  /** glossaryUnits のうち、用語集を付けると数式の目印がそろわず、用語集を付けずに訳し直した数。 */
+  glossaryDropped: number
 }
 
 const EMPTY_PAGE: PageState = { analysis: null, regions: null, rawUnits: null, fragments: [], translations: {} }
@@ -116,6 +133,8 @@ interface ActiveTranslation {
   backend: TranslatorBackend
   modelId: string
   cache: TranslationCache
+  /** 原文に出てくる語の、用語集の項目を選ぶ関数(glossary.ts)。 */
+  selectGlossary: (source: string) => GlossaryEntry[]
   queue: PriorityQueue<TranslationUnit>
   /** 翻訳単位を順番待ちに入れ終えたページ。 */
   enqueued: Set<number>
@@ -127,10 +146,14 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-/** 翻訳の依頼を作る。context は、参考情報として渡す文脈(題名、節の見出し、直前の段落)。 */
-function requestForSource(source: string, context: string | undefined): TranslateRequest {
+/**
+ * 翻訳の依頼を作る。
+ * context は、参考情報として渡す文脈(題名、節の見出し、直前の段落)。glossary は、この原文に出てくる語の、用語集の項目。
+ */
+function requestForSource(source: string, context: string | undefined, glossary: readonly GlossaryEntry[]): TranslateRequest {
   const request: TranslateRequest = { source, sourceLang: 'en', targetLang: 'ja', form: 'plain', maxTokens: MAX_TOKENS }
   if (context !== undefined) request.context = context
+  if (glossary.length > 0) request.glossary = glossary
   return request
 }
 
@@ -165,8 +188,10 @@ export class DocumentSession {
   private translation: ActiveTranslation | null = null
   private progress: SessionProgress | null = null
   private focusPage = 1
-  /** 直近の翻訳で、llama-server へ依頼した数。翻訳を止めたあとも、表示のために残す。 */
+  /** 直近の翻訳で、翻訳サーバーへ依頼した数。翻訳を止めたあとも、表示のために残す。 */
   private requests = 0
+  /** 直近の翻訳で使った用語集の項目の数。 */
+  private glossaryTerms = 0
   private disposed = false
   /** 字形の実際の範囲を測る関数。数式の範囲を決めるときに使う。 */
   private readonly measureInk: GlyphInkMeasurer = createCanvasInkMeasurer()
@@ -235,6 +260,9 @@ export class DocumentSession {
       retried: 0,
       truncated: 0,
       requests: this.requests,
+      glossaryTerms: this.glossaryTerms,
+      glossaryUnits: 0,
+      glossaryDropped: 0,
     }
     for (const page of this.pages.values()) {
       if (!page.analysis) continue
@@ -248,6 +276,8 @@ export class DocumentSession {
       progress.merged += units.filter((unit) => unit.fragments.length > 1).length
     }
     for (const state of this.unitStates.values()) {
+      if (state.glossary.length > 0) progress.glossaryUnits += 1
+      if (state.glossaryDropped) progress.glossaryDropped += 1
       if (state.status === 'done') {
         progress.done += 1
         if (state.fromCache) progress.cached += 1
@@ -381,9 +411,16 @@ export class DocumentSession {
 
   /**
    * 文書全体の翻訳を始める。表示中のページから順に、翻訳単位を組み立てて依頼する。
-   * 保存してある訳文がある翻訳単位は、依頼せずにそれを使う。
+   * 同じ依頼の訳文がすでにある翻訳単位(保存してあるもの、または前の翻訳で得たもの)は、依頼せずにそれを使う。
+   * glossary は、用語集の項目。翻訳単位ごとに、原文に出てくる語の項目だけを依頼に付ける。
+   * 依頼先や用語集を変えてから呼ぶと、依頼の内容が変わった翻訳単位だけを訳し直す。
    */
-  startTranslation(backend: TranslatorBackend, info: BackendInfo, cache: TranslationCache): void {
+  startTranslation(
+    backend: TranslatorBackend,
+    info: BackendInfo,
+    cache: TranslationCache,
+    glossary: readonly GlossaryEntry[] = [],
+  ): void {
     if (!this.detector) throw new Error('翻訳の前に、レイアウト検出を有効にしてください')
     this.stopTranslation()
 
@@ -391,6 +428,7 @@ export class DocumentSession {
       backend,
       modelId: info.modelId,
       cache,
+      selectGlossary: createGlossaryMatcher(glossary),
       enqueued: new Set(),
       prepared: false,
       queue: new PriorityQueue<TranslationUnit>({
@@ -403,6 +441,7 @@ export class DocumentSession {
     }
     this.translation = translation
     this.requests = 0
+    this.glossaryTerms = glossary.length
     this.emit()
     void this.prepareAll(translation)
   }
@@ -455,14 +494,31 @@ export class DocumentSession {
   private async enqueuePage(translation: ActiveTranslation, pageNumber: number): Promise<void> {
     const fresh: TranslationUnit[] = []
     for (const unit of this.linked.get(pageNumber) ?? []) {
-      if (this.unitStates.get(unit.id)?.status === 'done') continue
-      const key = await cacheKey(translation.modelId, this.requestFor(unit))
+      const request = this.requestFor(translation, unit)
+      const glossary = request.glossary ?? []
+      const key = await cacheKey(translation.modelId, request)
+      if (this.translation !== translation) return
+      // 前の翻訳で、同じ依頼の訳文を得ている場合は、そのまま使う。
+      // 依頼先や用語集を変えた場合は、鍵が変わるので、ここには当てはまらない。
+      const current = this.unitStates.get(unit.id)
+      if (current?.status === 'done' && current.key === key) {
+        if (!current.fromCache) this.updateUnit(unit, { ...current, fromCache: true })
+        continue
+      }
       const saved = await translation.cache.get(key).catch(() => undefined)
       if (this.translation !== translation) return
       if (saved) {
-        this.updateUnit(unit, { status: 'done', text: saved.text, fromCache: true, truncated: false })
+        this.updateUnit(unit, {
+          status: 'done',
+          text: saved.text,
+          fromCache: true,
+          truncated: false,
+          glossary,
+          glossaryDropped: saved.withoutGlossary === true,
+          key,
+        })
       } else {
-        this.updateUnit(unit, { status: 'waiting', text: '', fromCache: false, truncated: false })
+        this.updateUnit(unit, { status: 'waiting', text: '', fromCache: false, truncated: false, glossary })
         fresh.push(unit)
       }
     }
@@ -470,18 +526,23 @@ export class DocumentSession {
   }
 
   /** 翻訳単位の全体を訳す依頼を作る。 */
-  private requestFor(unit: TranslationUnit): TranslateRequest {
-    return requestForSource(unit.source, this.contexts.get(unit.id))
+  private requestFor(translation: ActiveTranslation, unit: TranslationUnit): TranslateRequest {
+    return requestForSource(unit.source, this.contexts.get(unit.id), translation.selectGlossary(unit.source))
   }
 
-  /** 1 件の依頼を行い、目印の表記ゆれを直した訳文を返す。保存してある訳文があれば、依頼せずにそれを使う。 */
+  /**
+   * 1 件の依頼を行い、目印の表記ゆれを直した訳文を返す。保存してある訳文があれば、依頼せずにそれを使う。
+   * withGlossary が false の場合は、用語集を付けない。
+   */
   private async requestTranslation(
     translation: ActiveTranslation,
     source: string,
     context: string | undefined,
     signal: AbortSignal,
+    withGlossary: boolean,
   ): Promise<{ text: string; truncated: boolean }> {
-    const request = requestForSource(source, context)
+    // 文ごとに訳し直す場合は、その文に出てくる語の項目だけを付ける。
+    const request = requestForSource(source, context, withGlossary ? translation.selectGlossary(source) : [])
     const key = await cacheKey(translation.modelId, request)
     const saved = await translation.cache.get(key).catch(() => undefined)
     if (saved) return { text: saved.text, truncated: false }
@@ -500,33 +561,44 @@ export class DocumentSession {
 
   private async translateUnit(translation: ActiveTranslation, unit: TranslationUnit, signal: AbortSignal): Promise<void> {
     if (signal.aborted) return
-    this.updateUnit(unit, { status: 'running', text: '', fromCache: false, truncated: false })
+    const request = this.requestFor(translation, unit)
+    const glossary = request.glossary ?? []
+    this.updateUnit(unit, { status: 'running', text: '', fromCache: false, truncated: false, glossary })
     try {
-      // 訳文の中の数式の目印がそろわない場合は、文ごとに訳し直す(tagged.ts)。文ごとの依頼にも、同じ文脈を付ける。
+      // 訳文の中の数式の目印がそろわない場合は、文ごとに訳し直す。文ごとの依頼にも、同じ文脈を付ける。
+      // 用語集を付けた依頼でそろわない場合は、用語集を付けずに、もう一度訳す(tagged.ts)。
       const context = this.contexts.get(unit.id)
-      const result = await translateTagged(unit.source, (source) => this.requestTranslation(translation, source, context, signal))
+      const result = await translateTaggedWithGlossary(unit.source, glossary.length > 0, (source, withGlossary) =>
+        this.requestTranslation(translation, source, context, signal, withGlossary),
+      )
       if (result.status === 'kept') {
-        this.updateUnit(unit, { status: 'kept', text: '', fromCache: false, truncated: false })
+        this.updateUnit(unit, { status: 'kept', text: '', fromCache: false, truncated: false, glossary })
         return
       }
+      const key = await cacheKey(translation.modelId, request)
       this.updateUnit(unit, {
         status: 'done',
         text: result.text,
         fromCache: false,
         truncated: result.truncated,
         retried: result.retried,
+        glossary,
+        glossaryDropped: result.glossaryDropped,
+        key,
       })
-      if (result.retried) {
-        // つないだ訳文を、段落全体の依頼の結果として保存する。次に開いたときは、訳し直しをせずに使える。
-        const key = await cacheKey(translation.modelId, this.requestFor(unit))
-        await translation.cache.set(key, { text: result.text, savedAt: Date.now() }).catch(() => undefined)
+      if ((result.retried || result.glossaryDropped) && !result.truncated) {
+        // 段落全体の依頼の結果として保存する。次に開いたときは、訳し直しをせずに使える。
+        // 文ごとの訳文をつないだ場合と、用語集を付けずに訳し直した場合は、依頼そのものの結果とは違うので、ここで保存する。
+        const saved: CachedTranslation = { text: result.text, savedAt: Date.now() }
+        if (result.glossaryDropped) saved.withoutGlossary = true
+        await translation.cache.set(key, saved).catch(() => undefined)
       }
     } catch (error) {
       if (signal.aborted) {
         // 中止した場合は、原文の表示に戻す。
         this.updateUnit(unit, undefined)
       } else {
-        this.updateUnit(unit, { status: 'failed', text: '', fromCache: false, truncated: false, error: messageOf(error) })
+        this.updateUnit(unit, { status: 'failed', text: '', fromCache: false, truncated: false, error: messageOf(error), glossary })
       }
     }
   }
