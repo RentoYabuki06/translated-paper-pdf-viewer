@@ -8,6 +8,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import type { DragEvent, FormEvent, ReactNode } from 'react'
 import { LayoutDetector, MODEL_BYTES } from '../layout/ortWebClient.ts'
 import type { LayoutBackend } from '../layout/types.ts'
+import { buildImagePdf } from '../lib/imagePdf.ts'
+import type { PdfImagePage } from '../lib/imagePdf.ts'
 import { median } from '../lib/stats.ts'
 import { arxivPdfUrl, parseArxivId } from '../pdf/arxiv.ts'
 import { loadPdf } from '../pdf/pdfjs.ts'
@@ -15,6 +17,7 @@ import { openTranslationCache } from '../translate/cache.ts'
 import { candidateModelIds, loadKnownModels, rememberModel } from '../translate/models.ts'
 import { ComparePanel } from './ComparePanel.tsx'
 import { useGlossary } from './glossaryContext.ts'
+import { clearPainterCache, paintRow } from './pagePainter.ts'
 import { PageView } from './PageView.tsx'
 import type { PageSize } from './PageView.tsx'
 import { DocumentSession } from './session.ts'
@@ -94,6 +97,26 @@ function describeProgress(progress: SessionProgress, pages: number): { short: st
   return { short, detail }
 }
 
+/** PDF に入れるページの画像の、JPEG の品質(0 から 1)。 */
+const JPEG_QUALITY = 0.9
+
+/** 保存する PDF のファイルの名前。もとの名前に、訳文だけなら _ja、原文と並べた形なら _en-ja を足す。 */
+function savedFileName(name: string, sideBySide: boolean): string {
+  const base = name.replace(/\.pdf$/i, '').replace(/[\\/:*?"<>|]/g, '_')
+  return `${base}${sideBySide ? '_en-ja' : '_ja'}.pdf`
+}
+
+/** プリンターの形のアイコン。 */
+function PrinterIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M7 9V3h10v6" />
+      <path d="M7 17H5a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-2" />
+      <rect x="7" y="14" width="10" height="7" />
+    </svg>
+  )
+}
+
 const noSubscription = () => () => undefined
 const noProgress = () => NO_PROGRESS
 
@@ -138,8 +161,10 @@ export function PdfViewer({ onOpenGlossary }: Props) {
   /** 翻訳を始める準備(接続の確認やモデルの読み込み)をしている間は true。 */
   const [startingTranslation, setStartingTranslation] = useState(false)
   const [compare, setCompare] = useState<CompareState>({ state: 'closed' })
-  /** 印刷の準備(すべてのページの描画)をしている間の、進み具合の表示。準備していなければ null。 */
-  const [printing, setPrinting] = useState<string | null>(null)
+  /** PDF を作っている間の、進み具合の表示。失敗した場合は、その知らせ。作っていなければ null。 */
+  const [saving, setSaving] = useState<string | null>(null)
+  /** PDF を作っている最中かどうか。 */
+  const savingNow = saving !== null && !saving.includes('保存できませんでした')
   const pagesRef = useRef<HTMLDivElement>(null)
   const detectorRef = useRef<LayoutDetector | null>(null)
   /** 開く操作の通し番号。あとから始めた操作だけを画面に反映するために使う。 */
@@ -261,41 +286,59 @@ export function PdfViewer({ onOpenGlossary }: Props) {
   }
 
   /**
-   * いま表示している形(訳文だけ、または原文と訳文を並べた形)で、ブラウザの印刷の画面を開く。
-   * 印刷の画面で、送信先に「PDF に保存」を選ぶと、PDF のファイルになる。
+   * いま表示している形(訳文だけ、または原文と訳文を並べた形)を、PDF のファイルにして保存する。
+   * ページを 1 枚ずつ画像に描き写し、その画像を並べた PDF を作る。ブラウザの印刷の画面は使わない。
    * ページは、表示範囲の近くだけを描画しているので、先に、すべてのページを描画する。
    */
-  async function printPages(): Promise<void> {
+  async function savePdf(): Promise<void> {
     const container = pagesRef.current
-    if (!container) return
-    setPrinting('印刷の準備をしています…')
+    const current = openedRef.current
+    if (!container || !current) return
+    setSaving('PDF を作る準備をしています…')
     try {
       const started = Date.now()
       for (;;) {
         const pages = [...container.querySelectorAll<HTMLElement>('.page')]
         const ready = pages.filter((page) => page.dataset.rendered === 'true' && page.dataset.cover !== 'pending').length
-        if (pages.length > 0 && ready === pages.length) break
+        // 訳文の中の数式は、もとのページの画像ができてから表示される。
+        const waiting = [...container.querySelectorAll<HTMLElement>('.math-sprite')].filter((sprite) => !sprite.style.backgroundImage).length
+        if (pages.length > 0 && ready === pages.length && waiting === 0) break
         if (Date.now() - started > 180_000) throw new Error('ページの描画が、3 分待っても終わりませんでした')
-        setPrinting(`印刷の準備をしています… ${ready} / ${pages.length} ページ分を描画しました`)
+        setSaving(`PDF を作る準備をしています… ${ready} / ${pages.length} ページ分を描画しました`)
         await new Promise((resolve) => setTimeout(resolve, 200))
       }
-      // 用紙の大きさを、1 行分(1 ページ、または並べた 2 ページ)の大きさに合わせる。余白なしで、ちょうど 1 枚に収まる。
-      const row = container.querySelector<HTMLElement>('.page-row')
-      const style = globalThis.document.createElement('style')
-      if (row) {
-        // 印刷では、並べたページの間のすき間を無くすので、幅は、ページの幅の合計にする。
-        const width = [...row.querySelectorAll<HTMLElement>('.page')].reduce((sum, page) => sum + page.offsetWidth, 0)
-        style.textContent = `@page { size: ${Math.ceil(width)}px ${Math.ceil(row.offsetHeight)}px; margin: 0; }`
+      const rows = [...container.querySelectorAll<HTMLElement>('.page-row')]
+      const pdfPages: PdfImagePage[] = []
+      for (const [index, row] of rows.entries()) {
+        setSaving(`PDF を作っています… ${index + 1} / ${rows.length} ページ`)
+        const painted = await paintRow(row)
+        if (!painted) continue
+        const blob = await new Promise<Blob | null>((resolve) => painted.canvas.toBlob(resolve, 'image/jpeg', JPEG_QUALITY))
+        if (!blob) throw new Error(`${index + 1} ページ目を、画像にできませんでした`)
+        pdfPages.push({
+          jpeg: new Uint8Array(await blob.arrayBuffer()),
+          pixelWidth: painted.canvas.width,
+          pixelHeight: painted.canvas.height,
+          // 画面の上の大きさを倍率で割ると、もとの PDF のページの大きさ(ポイント)になる。
+          width: painted.cssWidth / scale,
+          height: painted.cssHeight / scale,
+        })
+        // 画像のメモリを、すぐに手放す。
+        painted.canvas.width = 0
+        painted.canvas.height = 0
       }
-      globalThis.document.head.append(style)
-      try {
-        window.print()
-      } finally {
-        style.remove()
-      }
-      setPrinting(null)
+      if (pdfPages.length === 0) throw new Error('保存できるページがありません')
+      const url = URL.createObjectURL(new Blob([buildImagePdf(pdfPages) as BlobPart], { type: 'application/pdf' }))
+      const link = globalThis.document.createElement('a')
+      link.href = url
+      link.download = savedFileName(current.name, sideBySide)
+      link.click()
+      setTimeout(() => URL.revokeObjectURL(url), 60_000)
+      setSaving(null)
     } catch (error) {
-      setPrinting(`印刷の準備に失敗しました: ${messageOf(error)}`)
+      setSaving(`PDF を保存できませんでした: ${messageOf(error)}`)
+    } finally {
+      clearPainterCache()
     }
   }
 
@@ -432,11 +475,11 @@ export function PdfViewer({ onOpenGlossary }: Props) {
       </span>,
     )
   }
-  if (printing) {
+  if (saving) {
     statusNodes.push(
-      <span key="printing" className="notice">
+      <span key="saving" className="notice">
         {' '}
-        {printing}
+        {saving}
       </span>,
     )
   }
@@ -536,11 +579,13 @@ export function PdfViewer({ onOpenGlossary }: Props) {
               </button>
               <button
                 type="button"
-                onClick={() => void printPages()}
-                disabled={(printing !== null && !printing.includes('失敗')) || compare.state === 'ready'}
-                title="印刷の画面が開きます。送信先に「PDF に保存」を選ぶと、PDF のファイルになります"
+                className="icon-button"
+                onClick={() => void savePdf()}
+                disabled={savingNow || compare.state === 'ready'}
+                aria-label="PDF として保存"
+                title="いま表示している形(訳文だけ、または原文と訳文を並べた形)を、PDF のファイルにして保存します"
               >
-                PDF に保存・印刷
+                <PrinterIcon />
               </button>
             </span>
             {/* 解析結果の確認用の操作。URL に ?debug を付けたときだけ出す。 */}
@@ -654,7 +699,7 @@ export function PdfViewer({ onOpenGlossary }: Props) {
                         showTranslations={false}
                         detectorEnabled={detector !== null}
                         xray={NO_XRAY}
-                        forceRender={printing !== null}
+                        forceRender={savingNow}
                       />
                     )}
                     <PageView
@@ -666,7 +711,7 @@ export function PdfViewer({ onOpenGlossary }: Props) {
                       showTranslations={showTranslations}
                       detectorEnabled={detector !== null}
                       xray={xray}
-                      forceRender={printing !== null}
+                      forceRender={savingNow}
                     />
                   </div>
                 )

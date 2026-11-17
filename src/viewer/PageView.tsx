@@ -34,7 +34,7 @@ interface Props {
   /** レイアウト検出が有効かどうか。有効になったら、表示中のページを検出にかける。 */
   detectorEnabled: boolean
   xray: XRayOptions
-  /** true のとき、表示範囲から離れていても描画する。印刷の前に、すべてのページを描画するために使う。 */
+  /** true のとき、表示範囲から離れていても描画する。PDF として保存する前に、すべてのページを描画するために使う。 */
   forceRender?: boolean
 }
 
@@ -204,7 +204,7 @@ export function PageView({
       className="page"
       style={{ width: size.width * scale, height: size.height * scale }}
       data-page-number={pageNumber}
-      // 印刷の前に、描画が終わったかどうかを確かめるための印。
+      // PDF として保存する前に、描画が終わったかどうかを確かめるための印。
       data-rendered={rendered ? 'true' : 'false'}
       data-cover={needCover ? (coverReady ? 'ready' : 'pending') : 'none'}
     >
