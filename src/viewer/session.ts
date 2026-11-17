@@ -131,6 +131,13 @@ export interface SessionProgress {
 
 const EMPTY_PAGE: PageState = { analysis: null, regions: null, rawUnits: null, fragments: [], translations: {} }
 
+/** 訳文を比べる画面の 1 行。翻訳単位 1 つと、モデルごとの保存してあった訳文。 */
+export interface ComparisonRow {
+  unit: TranslationUnit
+  /** 訳文。モデルの名前の並び(collectSavedTranslations に渡したもの)と同じ順。保存されていなければ null。 */
+  translations: (string | null)[]
+}
+
 interface ActiveTranslation {
   backend: TranslatorBackend
   modelId: string
@@ -497,6 +504,67 @@ export class DocumentSession {
       translation.prepared = true
       this.emit()
     }
+  }
+
+  /**
+   * すべてのページの翻訳単位を確定する。翻訳の依頼はしない。
+   * 途中でレイアウト検出が切り替わった場合(翻訳単位を捨てた場合)は、false を返す。
+   */
+  private async linkAllPages(): Promise<boolean> {
+    const detector = this.detector
+    if (!detector) throw new Error('訳文を比べる前に、レイアウト検出を有効にしてください')
+    // 題名は、すべての依頼の文脈に入る。翻訳のとき(prepareAll)と同じ文脈になるよう、最初に 1 ページ目を準備する。
+    if (this.title === null) {
+      await this.ensureLayout(1).catch(() => undefined)
+      if (this.detector !== detector || this.disposed) return false
+      if (this.title === null) {
+        const first = this.getPage(1).rawUnits?.find((unit) => unit.kind === 'doc_title')
+        this.title = first?.source ?? ''
+      }
+    }
+    for (let pageNumber = 1; pageNumber <= this.document.numPages; pageNumber += 1) {
+      try {
+        await this.ensureLayout(pageNumber)
+      } catch (error) {
+        console.warn(`[session] ${pageNumber} ページ目の準備に失敗しました:`, error)
+        if (this.detector === detector && !this.getPage(pageNumber).rawUnits) this.update(pageNumber, { rawUnits: [] })
+      }
+      if (this.detector !== detector || this.disposed) return false
+      // 前のページは、このページの翻訳単位がそろったので、確定できる。最後のページは、次のページを待たずに確定できる。
+      this.tryLink(pageNumber - 1)
+      this.tryLink(pageNumber)
+    }
+    return true
+  }
+
+  /**
+   * すべてのページの翻訳単位について、モデルごとに、保存してある訳文を集める。翻訳の依頼はしない。
+   *
+   * 保存してある訳文は、翻訳のときと同じ依頼(原文、文脈、用語集)の鍵で探す。
+   * そのため、用語集を変えると、変える前に保存した訳文は、語が出てくる段落では見つからなくなる。
+   * 返す行は、読む順に並ぶ。途中でレイアウト検出が切り替わった場合は、null を返す。
+   */
+  async collectSavedTranslations(
+    modelIds: readonly string[],
+    cache: TranslationCache,
+    glossary: readonly GlossaryEntry[] = [],
+  ): Promise<ComparisonRow[] | null> {
+    if (!(await this.linkAllPages())) return null
+    const selectGlossary = createGlossaryMatcher(glossary)
+    const rows: ComparisonRow[] = []
+    for (let pageNumber = 1; pageNumber <= this.document.numPages; pageNumber += 1) {
+      for (const unit of this.linked.get(pageNumber) ?? []) {
+        const request = requestForSource(unit.source, this.contexts.get(unit.id), selectGlossary(unit.source))
+        const translations = await Promise.all(
+          modelIds.map(async (modelId) => {
+            const saved = await cache.get(await cacheKey(modelId, request)).catch(() => undefined)
+            return saved?.text ?? null
+          }),
+        )
+        rows.push({ unit, translations })
+      }
+    }
+    return rows
   }
 
   private async enqueuePage(translation: ActiveTranslation, pageNumber: number): Promise<void> {

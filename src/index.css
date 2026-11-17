@@ -528,3 +528,92 @@ footer {
 .notice {
   color: light-dark(#8a5a00, #f8e45c);
 }
+
+/* モデルごとの訳文を比べる画面。 */
+.compare .row {
+  gap: 0.5rem 1rem;
+}
+
+.compare label {
+  display: inline;
+  margin: 0;
+  font-weight: 400;
+}
+
+.compare input[type='checkbox'] {
+  flex: none;
+  min-width: 0;
+  margin-right: 0.25rem;
+}
+
+.compare select {
+  font: inherit;
+}
+
+/* 表の中だけを上下に送る。モデルの名前の行(thead)は、この枠の上端に残る。 */
+.compare-scroll {
+  max-height: 75vh;
+  margin-top: 0.75rem;
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.compare-table {
+  width: 100%;
+  border-collapse: collapse;
+  /* 原文と、モデルごとの訳文の列を、同じ幅にする。 */
+  table-layout: fixed;
+  font-size: 0.85rem;
+  line-height: 1.6;
+}
+
+.compare-table th,
+.compare-table td {
+  padding: 0.4rem 0.6rem 0.4rem 0;
+  border-top: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.compare-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  border-top: none;
+  border-bottom: 2px solid var(--border);
+  background: Canvas;
+  font-weight: 600;
+}
+
+.compare-table .position {
+  width: 4.5rem;
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.compare-table .position .status {
+  display: block;
+}
+
+/* 訳文がすべて同じ行は、控えめに表示する。 */
+.compare-table tr.identical td {
+  color: var(--muted);
+}
+
+/* 基準にするモデルの訳文には無い部分。 */
+.compare-diff {
+  border-radius: 2px;
+  background: light-dark(#ffe9a8, #5c4a00);
+  color: inherit;
+}
+
+/* 数式の目印の位置に置く、PDF から読み取った数式の文字。 */
+.compare-math {
+  padding: 0 0.15em;
+  border-radius: 2px;
+  background: light-dark(#eef1f5, #2d3138);
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 0.9em;
+}

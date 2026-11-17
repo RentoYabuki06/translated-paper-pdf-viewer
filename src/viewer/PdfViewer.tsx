@@ -12,12 +12,14 @@ import { median } from '../lib/stats.ts'
 import { arxivPdfUrl, parseArxivId } from '../pdf/arxiv.ts'
 import { loadPdf } from '../pdf/pdfjs.ts'
 import { openTranslationCache } from '../translate/cache.ts'
+import { candidateModelIds, loadKnownModels, rememberModel } from '../translate/models.ts'
 import { describeTarget } from '../translate/settings.ts'
+import { ComparePanel } from './ComparePanel.tsx'
 import { useGlossary } from './glossaryContext.ts'
 import { PageView } from './PageView.tsx'
 import type { PageSize } from './PageView.tsx'
 import { DocumentSession } from './session.ts'
-import type { SessionProgress } from './session.ts'
+import type { ComparisonRow, SessionProgress } from './session.ts'
 import { useTranslator } from './translatorContext.ts'
 import type { XRayOptions } from './XRayLayer.tsx'
 
@@ -72,6 +74,13 @@ const noProgress = () => NO_PROGRESS
 
 type Status = { state: 'idle' } | { state: 'loading'; message: string } | { state: 'error'; message: string }
 
+/** モデルごとの訳文を比べる画面の状態。 */
+type CompareState =
+  | { state: 'closed' }
+  | { state: 'loading' }
+  | { state: 'ready'; modelIds: string[]; rows: ComparisonRow[] }
+  | { state: 'error'; message: string }
+
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
@@ -109,6 +118,7 @@ export function PdfViewer({ onOpenServerSettings, onOpenGlossary }: Props) {
   const [translationError, setTranslationError] = useState<string | null>(null)
   /** 翻訳を始める準備(接続の確認やモデルの読み込み)をしている間は true。 */
   const [startingTranslation, setStartingTranslation] = useState(false)
+  const [compare, setCompare] = useState<CompareState>({ state: 'closed' })
   const detectorRef = useRef<LayoutDetector | null>(null)
   /** 開く操作の通し番号。あとから始めた操作だけを画面に反映するために使う。 */
   const openSequence = useRef(0)
@@ -149,6 +159,45 @@ export function PdfViewer({ onOpenServerSettings, onOpenGlossary }: Props) {
     detectorRef.current?.dispose()
     detectorRef.current = null
     setDetectorState({ state: 'off' })
+    // 翻訳単位を捨てるので、訳文を比べる画面も閉じる。
+    setCompare({ state: 'closed' })
+  }
+
+  /**
+   * 開いている PDF について、モデルごとに保存してある訳文を集めて、比べる画面を開く。翻訳の依頼はしない。
+   * 段落を決めるためにレイアウト検出が要るので、有効になっていなければ先に有効にする。
+   */
+  async function openComparison(): Promise<void> {
+    const session = openedRef.current?.session
+    if (!session) return
+    setCompare({ state: 'loading' })
+    try {
+      const detector = detectorRef.current ?? (await enableDetector())
+      if (!detector) {
+        setCompare({ state: 'closed' })
+        return
+      }
+      const cache = await openTranslationCache()
+      // 保存してある訳文を探すモデルの名前。いま接続しているモデルと、Ollama の設定の名前も、候補に足す。
+      const connected = translator.connection.state === 'ok' ? [translator.connection.info.modelId] : []
+      const ollama = translator.settings.ollamaModel ? [translator.settings.ollamaModel] : []
+      const candidates = candidateModelIds([...loadKnownModels(), ...connected, ...ollama])
+      const rows = await session.collectSavedTranslations(candidates, cache, glossary.entries)
+      // 集めている間に、別の PDF を開いた場合や、レイアウト検出を切り替えた場合は、開かない。
+      if (openedRef.current?.session !== session || !rows) {
+        setCompare({ state: 'closed' })
+        return
+      }
+      // 訳文が 1 件も無いモデルは、列にしない。
+      const found = candidates.map((id, index) => ({ id, index })).filter(({ index }) => rows.some((row) => row.translations[index] != null))
+      setCompare({
+        state: 'ready',
+        modelIds: found.map(({ id }) => id),
+        rows: rows.map((row) => ({ unit: row.unit, translations: found.map(({ index }) => row.translations[index] ?? null) })),
+      })
+    } catch (error) {
+      setCompare({ state: 'error', message: messageOf(error) })
+    }
   }
 
   /**
@@ -178,6 +227,8 @@ export function PdfViewer({ onOpenServerSettings, onOpenGlossary }: Props) {
       // 訳文を読みやすくするため、確認用の枠を消す。
       setXray({ paragraphs: false, lines: false, runs: false, math: false, regions: false })
       setShowTranslations(true)
+      // 訳文を比べる画面で、このモデルの訳文を探せるよう、名前を覚えておく。
+      rememberModel(connected.info.modelId)
       session.startTranslation(connected.backend, connected.info, cache, entries)
       setTranslatedGlossary(signature)
     } catch (error) {
@@ -207,6 +258,7 @@ export function PdfViewer({ onOpenServerSettings, onOpenGlossary }: Props) {
       openedRef.current = next
       setTranslationError(null)
       setTranslatedGlossary(null)
+      setCompare({ state: 'closed' })
       setOpened(next)
       setStatus({ state: 'idle' })
     } catch (error) {
@@ -431,6 +483,9 @@ export function PdfViewer({ onOpenServerSettings, onOpenGlossary }: Props) {
                   訳文を表示
                 </label>
               )}
+              <button type="button" onClick={() => void openComparison()} disabled={compare.state === 'loading'}>
+                モデルごとの訳文を比べる
+              </button>
             </span>
             <span className="status" role="status">
               {translationError && <span className="error">{translationError}</span>}
@@ -448,21 +503,45 @@ export function PdfViewer({ onOpenServerSettings, onOpenGlossary }: Props) {
             </span>
           </section>
 
-          <div className="pages">
-            {Array.from({ length: opened.document.numPages }, (_, index) => (
-              <PageView
-                // PDF を開き直したときに、前の PDF の描画や解析結果を引き継がない。
-                key={`${opened.document.fingerprints[0] ?? opened.name}-${index + 1}`}
-                session={opened.session}
-                pageNumber={index + 1}
-                scale={scale}
-                estimatedSize={opened.firstPageSize}
-                showWithoutText={showWithoutText}
-                showTranslations={showTranslations}
-                detectorEnabled={detector !== null}
-                xray={xray}
-              />
-            ))}
+          {compare.state === 'loading' && (
+            <p className="status" role="status">
+              保存してある訳文を集めています…
+            </p>
+          )}
+          {compare.state === 'error' && (
+            <p className="status" role="status">
+              <span className="error">訳文を比べる画面を開けませんでした: {compare.message}</span>
+            </p>
+          )}
+          {compare.state === 'ready' && (
+            <ComparePanel
+              // 読み込み直したときに、列の選び方を作り直す。
+              key={compare.modelIds.join('|')}
+              modelIds={compare.modelIds}
+              rows={compare.rows}
+              onReload={() => void openComparison()}
+              onClose={() => setCompare({ state: 'closed' })}
+            />
+          )}
+
+          {/* 比べる画面を開いている間も、ページの描画や翻訳の状態を保つため、隠すだけにする。 */}
+          <div hidden={compare.state === 'ready'}>
+            <div className="pages">
+              {Array.from({ length: opened.document.numPages }, (_, index) => (
+                <PageView
+                  // PDF を開き直したときに、前の PDF の描画や解析結果を引き継がない。
+                  key={`${opened.document.fingerprints[0] ?? opened.name}-${index + 1}`}
+                  session={opened.session}
+                  pageNumber={index + 1}
+                  scale={scale}
+                  estimatedSize={opened.firstPageSize}
+                  showWithoutText={showWithoutText}
+                  showTranslations={showTranslations}
+                  detectorEnabled={detector !== null}
+                  xray={xray}
+                />
+              ))}
+            </div>
           </div>
         </>
       )}
