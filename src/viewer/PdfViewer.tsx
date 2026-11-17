@@ -124,6 +124,9 @@ export function PdfViewer({ onOpenServerSettings, onOpenGlossary }: Props) {
   /** 翻訳を始める準備(接続の確認やモデルの読み込み)をしている間は true。 */
   const [startingTranslation, setStartingTranslation] = useState(false)
   const [compare, setCompare] = useState<CompareState>({ state: 'closed' })
+  /** 印刷の準備(すべてのページの描画)をしている間の、進み具合の表示。準備していなければ null。 */
+  const [printing, setPrinting] = useState<string | null>(null)
+  const pagesRef = useRef<HTMLDivElement>(null)
   const detectorRef = useRef<LayoutDetector | null>(null)
   /** 開く操作の通し番号。あとから始めた操作だけを画面に反映するために使う。 */
   const openSequence = useRef(0)
@@ -240,6 +243,45 @@ export function PdfViewer({ onOpenServerSettings, onOpenGlossary }: Props) {
       setTranslationError(messageOf(error))
     } finally {
       setStartingTranslation(false)
+    }
+  }
+
+  /**
+   * いま表示している形(訳文だけ、または原文と訳文を並べた形)で、ブラウザの印刷の画面を開く。
+   * 印刷の画面で、送信先に「PDF に保存」を選ぶと、PDF のファイルになる。
+   * ページは、表示範囲の近くだけを描画しているので、先に、すべてのページを描画する。
+   */
+  async function printPages(): Promise<void> {
+    const container = pagesRef.current
+    if (!container) return
+    setPrinting('印刷の準備をしています…')
+    try {
+      const started = Date.now()
+      for (;;) {
+        const pages = [...container.querySelectorAll<HTMLElement>('.page')]
+        const ready = pages.filter((page) => page.dataset.rendered === 'true' && page.dataset.cover !== 'pending').length
+        if (pages.length > 0 && ready === pages.length) break
+        if (Date.now() - started > 180_000) throw new Error('ページの描画が、3 分待っても終わりませんでした')
+        setPrinting(`印刷の準備をしています… ${ready} / ${pages.length} ページ分を描画しました`)
+        await new Promise((resolve) => setTimeout(resolve, 200))
+      }
+      // 用紙の大きさを、1 行分(1 ページ、または並べた 2 ページ)の大きさに合わせる。余白なしで、ちょうど 1 枚に収まる。
+      const row = container.querySelector<HTMLElement>('.page-row')
+      const style = globalThis.document.createElement('style')
+      if (row) {
+        // 印刷では、並べたページの間のすき間を無くすので、幅は、ページの幅の合計にする。
+        const width = [...row.querySelectorAll<HTMLElement>('.page')].reduce((sum, page) => sum + page.offsetWidth, 0)
+        style.textContent = `@page { size: ${Math.ceil(width)}px ${Math.ceil(row.offsetHeight)}px; margin: 0; }`
+      }
+      globalThis.document.head.append(style)
+      try {
+        window.print()
+      } finally {
+        style.remove()
+      }
+      setPrinting(null)
+    } catch (error) {
+      setPrinting(`印刷の準備に失敗しました: ${messageOf(error)}`)
     }
   }
 
@@ -495,6 +537,14 @@ export function PdfViewer({ onOpenServerSettings, onOpenGlossary }: Props) {
               <button type="button" onClick={() => void openComparison()} disabled={compare.state === 'loading'}>
                 モデルごとの訳文を比べる
               </button>
+              <button
+                type="button"
+                onClick={() => void printPages()}
+                disabled={(printing !== null && !printing.includes('失敗')) || compare.state === 'ready'}
+                title="印刷の画面が開きます。送信先に「PDF に保存」を選ぶと、PDF のファイルになります"
+              >
+                PDF に保存・印刷
+              </button>
             </span>
             <span className="status" role="status">
               {translationError && <span className="error">{translationError}</span>}
@@ -503,6 +553,7 @@ export function PdfViewer({ onOpenServerSettings, onOpenGlossary }: Props) {
                 `${progress.translating ? '翻訳しています' : progress.stopped ? '翻訳を中止しました' : '翻訳が終わりました'}: ${progress.done + progress.kept} / ${progress.units} 段落(${progress.preparedPages} / ${opened.document.numPages} ページを準備済み、段やページをまたいでつないだ段落 ${progress.merged} 件、依頼 ${progress.requests} 件、保存分の再利用 ${progress.cached} 件、失敗 ${progress.failed} 件、途中で切れた訳文 ${progress.truncated} 件、文ごとに訳し直した段落 ${progress.retried} 件、数式の目印がそろわず原文のまま ${progress.kept} 件${
                   progress.glossaryTerms > 0 ? `、用語集の語が出てくる段落 ${progress.glossaryUnits} 件` : ''
                 }${progress.glossaryDropped > 0 ? `、うち用語集を付けずに訳し直した段落 ${progress.glossaryDropped} 件` : ''})`}
+              {printing && <span className="notice"> {printing}</span>}
               {glossaryChanged && (
                 <span className="notice">
                   {' '}
@@ -535,7 +586,7 @@ export function PdfViewer({ onOpenServerSettings, onOpenGlossary }: Props) {
 
           {/* 比べる画面を開いている間も、ページの描画や翻訳の状態を保つため、隠すだけにする。 */}
           <div hidden={compare.state === 'ready'}>
-            <div className={sideBySide ? 'pages side-by-side' : 'pages'}>
+            <div ref={pagesRef} className={sideBySide ? 'pages side-by-side' : 'pages'}>
               {Array.from({ length: opened.document.numPages }, (_, index) => {
                 // PDF を開き直したときに、前の PDF の描画や解析結果を引き継がない。
                 const key = `${opened.document.fingerprints[0] ?? opened.name}-${index + 1}`
@@ -552,6 +603,7 @@ export function PdfViewer({ onOpenServerSettings, onOpenGlossary }: Props) {
                         showTranslations={false}
                         detectorEnabled={detector !== null}
                         xray={NO_XRAY}
+                        forceRender={printing !== null}
                       />
                     )}
                     <PageView
@@ -563,6 +615,7 @@ export function PdfViewer({ onOpenServerSettings, onOpenGlossary }: Props) {
                       showTranslations={showTranslations}
                       detectorEnabled={detector !== null}
                       xray={xray}
+                      forceRender={printing !== null}
                     />
                   </div>
                 )

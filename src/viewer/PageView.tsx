@@ -34,6 +34,8 @@ interface Props {
   /** レイアウト検出が有効かどうか。有効になったら、表示中のページを検出にかける。 */
   detectorEnabled: boolean
   xray: XRayOptions
+  /** true のとき、表示範囲から離れていても描画する。印刷の前に、すべてのページを描画するために使う。 */
+  forceRender?: boolean
 }
 
 function isCancelled(error: unknown): boolean {
@@ -55,11 +57,15 @@ export function PageView({
   showTranslations,
   detectorEnabled,
   xray,
+  forceRender = false,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const normalCanvasRef = useRef<HTMLCanvasElement>(null)
   const textlessCanvasRef = useRef<HTMLCanvasElement>(null)
-  const [near, setNear] = useState(false)
+  const [nearViewport, setNear] = useState(false)
+  const near = nearViewport || forceRender
+  /** 通常の描画が、いまの倍率で終わっているかどうか。 */
+  const [rendered, setRendered] = useState(false)
   const [size, setSize] = useState<PageSize>(estimatedSize)
   const [error, setError] = useState<string | null>(null)
   /** 文字を描かない描画が、いまの倍率と範囲で終わっているかどうか。 */
@@ -117,6 +123,7 @@ export function PageView({
       setSize({ width: viewport.width, height: viewport.height })
       task = renderPage(page, canvas, { scale })
       await task.promise
+      if (!cancelled) setRendered(true)
     }
 
     run().catch((cause: unknown) => {
@@ -125,6 +132,7 @@ export function PageView({
     return () => {
       cancelled = true
       task?.cancel()
+      setRendered(false)
     }
   }, [session, pageNumber, scale, near])
 
@@ -196,6 +204,9 @@ export function PageView({
       className="page"
       style={{ width: size.width * scale, height: size.height * scale }}
       data-page-number={pageNumber}
+      // 印刷の前に、描画が終わったかどうかを確かめるための印。
+      data-rendered={rendered ? 'true' : 'false'}
+      data-cover={needCover ? (coverReady ? 'ready' : 'pending') : 'none'}
     >
       <canvas ref={normalCanvasRef} hidden={showWithoutText && coverReady} />
       <canvas

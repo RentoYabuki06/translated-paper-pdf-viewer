@@ -148,9 +148,6 @@ footer {
 }
 
 .toolbar {
-  position: sticky;
-  top: 0;
-  z-index: 2;
   display: flex;
   flex-wrap: wrap;
   gap: 0.25rem 1rem;
@@ -631,4 +628,53 @@ footer {
   margin-left: calc(50% - 50vw);
   box-sizing: border-box;
   padding: 0 1rem;
+}
+
+/* 印刷と、PDF への保存。ページだけを、1 行(1 ページ、または並べた 2 ページ)につき 1 枚で出す。 */
+@media print {
+  * {
+    /* 数式の切り抜きは背景の画像なので、背景も印刷させる。 */
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  body {
+    background: #fff;
+  }
+
+  .app {
+    max-width: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .app > h1,
+  .tabs,
+  footer,
+  .panel,
+  .status,
+  .page-error,
+  .xray,
+  .translation-marker {
+    display: none !important;
+  }
+
+  .pages,
+  .pages.side-by-side {
+    display: block;
+    width: auto;
+    margin: 0;
+    padding: 0;
+    overflow: visible;
+  }
+
+  .page-row {
+    gap: 0;
+    break-after: page;
+    break-inside: avoid;
+  }
+
+  .page {
+    box-shadow: none;
+  }
 }
