@@ -13,8 +13,16 @@ export const DEFAULT_PORT = 8080
 export const DEFAULT_PARALLEL = 4
 /** 1 回の依頼で使う入出力の上限(トークン数)。 */
 export const TOKENS_PER_REQUEST = 2048
-/** アプリと実験スクリプトが、依頼先のモデルを指すために使う名前。 */
-export const MODEL_ALIAS = 'plamo-3-translate'
+/**
+ * llama-server に付ける、モデルの別名。大きさと量子化の種類を含める。例: plamo-3-translate-2b-Q4_K_M
+ *
+ * アプリは、訳文を、この別名ごとに分けて保存する(src/translate/cache.ts)。
+ * 別名に大きさと量子化の種類が入っていないと、モデルを替えても、前のモデルの訳文が使われてしまう。
+ * アプリは、別名がこの形かどうかで、npm run model で起動した llama-server かどうかも確かめる(src/translate/settings.ts)。
+ */
+export function modelAlias(size: ModelSize, quant: string): string {
+  return `plamo-3-translate-${size}-${quant}`
+}
 
 export function isModelSize(value: string): value is ModelSize {
   return (MODEL_SIZES as readonly string[]).includes(value)
@@ -54,7 +62,7 @@ export function buildLlamaServerArguments(options: LlamaServerArgumentOptions): 
     '-hf',
     `${ggufRepository(size)}:${quant}`,
     '--alias',
-    MODEL_ALIAS,
+    modelAlias(size, quant),
     // 自分のマシンからの接続だけを受け付ける。
     '--host',
     '127.0.0.1',

@@ -87,8 +87,13 @@ export function describeTarget(settings: TranslatorSettings): string {
   return settings.kind === 'ollama' ? `Ollama(${settings.ollamaUrl})` : `llama-server(${settings.llamaServerUrl})`
 }
 
-/** npm run model が、llama-server に付けるモデルの別名(scripts/lib/llamaArgs.ts)。 */
-const LAUNCHER_ALIAS = 'plamo-3-translate'
+/**
+ * npm run model が llama-server に付ける、モデルの別名の形(scripts/lib/llamaArgs.ts の modelAlias)。
+ * 大きさと量子化の種類を含む。例: plamo-3-translate-2b-Q4_K_M
+ */
+const LAUNCHER_ALIAS = /^plamo-3-translate-[0-9.]+b-[A-Za-z0-9_]+$/
+/** 以前の版の npm run model が付けていた別名。大きさと量子化の種類を含まない。 */
+const LEGACY_LAUNCHER_ALIAS = 'plamo-3-translate'
 /** 1 件の依頼に必要な、入出力の長さの目安(トークン数)。 */
 const REQUIRED_CONTEXT = 2048
 
@@ -101,9 +106,13 @@ export function connectionWarnings(kind: BackendKind, info: BackendInfo): string
     warnings.push(
       `モデルの名前(${info.modelId})に「plamo」が含まれていません。PLaMo 3 Translate 以外のモデルでは、依頼の書式が合わず、正しく訳されません。`,
     )
-  } else if (kind === 'llama-server' && info.modelId !== LAUNCHER_ALIAS) {
+  } else if (kind === 'llama-server' && info.modelId === LEGACY_LAUNCHER_ALIAS) {
     warnings.push(
-      `モデルの別名が「${LAUNCHER_ALIAS}」ではありません。npm run model 以外の方法で起動した llama-server では、PLaMo 3 Translate に必要な起動時の指定が付いていない可能性があります。`,
+      `モデルの別名(${info.modelId})に、モデルの大きさが入っていません。以前の版の npm run model で起動した llama-server です。このままでは、モデルの大きさを替えても、保存した訳文が区別されません。llama-server を起動し直してください。`,
+    )
+  } else if (kind === 'llama-server' && !LAUNCHER_ALIAS.test(info.modelId)) {
+    warnings.push(
+      `モデルの別名(${info.modelId})が、npm run model が付ける形(plamo-3-translate-2b-Q4_K_M など)ではありません。npm run model 以外の方法で起動した llama-server では、PLaMo 3 Translate に必要な起動時の指定が付いていない可能性があります。`,
     )
   }
   if (info.contextPerSlot !== null && info.contextPerSlot < REQUIRED_CONTEXT) {

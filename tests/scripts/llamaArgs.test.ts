@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildLlamaServerArguments, ggufFileUrl, ggufRepository, isModelSize } from '../../scripts/lib/llamaArgs.ts'
+import { buildLlamaServerArguments, ggufFileUrl, ggufRepository, isModelSize, modelAlias } from '../../scripts/lib/llamaArgs.ts'
 
 describe('モデルの指定', () => {
   it('大きさからリポジトリ名とファイルの URL を作る', () => {
@@ -13,6 +13,14 @@ describe('モデルの指定', () => {
     expect(isModelSize('8b')).toBe(true)
     expect(isModelSize('4b')).toBe(false)
   })
+
+  it('別名に、大きさと量子化の種類を含める', () => {
+    expect(modelAlias('2b', 'Q4_K_M')).toBe('plamo-3-translate-2b-Q4_K_M')
+    expect(modelAlias('0.8b', 'Q4_0')).toBe('plamo-3-translate-0.8b-Q4_0')
+    // 大きさか量子化の種類が違えば、別名も違う。アプリは、訳文を別名ごとに分けて保存する。
+    expect(modelAlias('8b', 'Q4_K_M')).not.toBe(modelAlias('2b', 'Q4_K_M'))
+    expect(modelAlias('2b', 'Q3_K_M')).not.toBe(modelAlias('2b', 'Q4_K_M'))
+  })
 })
 
 describe('buildLlamaServerArguments', () => {
@@ -23,12 +31,17 @@ describe('buildLlamaServerArguments', () => {
 
     const valueOf = (flag: string) => args[args.indexOf(flag) + 1]
     expect(valueOf('-hf')).toBe('pfnet/plamo-3-translate-2b-GGUF:Q4_K_M')
-    expect(valueOf('--alias')).toBe('plamo-3-translate')
+    expect(valueOf('--alias')).toBe('plamo-3-translate-2b-Q4_K_M')
     expect(valueOf('--host')).toBe('127.0.0.1')
     expect(valueOf('--port')).toBe('8080')
     expect(valueOf('--parallel')).toBe('4')
     expect(valueOf('--yarn-beta-fast')).toBe('31.738495')
     expect(valueOf('--yarn-beta-slow')).toBe('1.0040927')
+  })
+
+  it('別名は、指定した大きさと量子化の種類のものにする', () => {
+    const args = buildLlamaServerArguments({ size: '8b', quant: 'Q3_K_M', port: 8080, parallel: 4, yarnArguments })
+    expect(args[args.indexOf('--alias') + 1]).toBe('plamo-3-translate-8b-Q3_K_M')
   })
 
   it('文脈の長さは、1 依頼の上限 2,048 トークンに同時処理数を掛けた値にする', () => {
