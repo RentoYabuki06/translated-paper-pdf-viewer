@@ -4,6 +4,7 @@
  */
 
 import type { PDFDocumentProxy } from 'pdfjs-dist'
+import { createPortal } from 'react-dom'
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { DragEvent, FormEvent, ReactNode } from 'react'
 import { LayoutDetector, MODEL_BYTES } from '../layout/ortWebClient.ts'
@@ -16,6 +17,7 @@ import { loadPdf } from '../pdf/pdfjs.ts'
 import { openTranslationCache } from '../translate/cache.ts'
 import { candidateModelIds, loadKnownModels, rememberModel } from '../translate/models.ts'
 import { ComparePanel } from './ComparePanel.tsx'
+import { ConnectionBadge } from './ConnectionBadge.tsx'
 import { useGlossary } from './glossaryContext.ts'
 import { clearPainterCache, paintRow } from './pagePainter.ts'
 import { formatBytes, formatTime, historyStore } from './history.ts'
@@ -138,11 +140,17 @@ function messageOf(error: unknown): string {
 }
 
 interface Props {
+  /** 翻訳サーバーの設定の画面を開く。 */
+  onOpenServerSettings: () => void
+  /** メニューの中の、履歴の一覧を描く場所。まだ無ければ null。 */
+  historySlot: HTMLElement | null
+  /** 履歴から PDF を選んだことを伝える。メニューを閉じて、この画面に切り替えてもらう。 */
+  onSelectHistory: () => void
   /** 用語集の画面を開く。 */
   onOpenGlossary: () => void
 }
 
-export function PdfViewer({ onOpenGlossary }: Props) {
+export function PdfViewer({ onOpenServerSettings, onOpenGlossary, historySlot, onSelectHistory }: Props) {
   const translator = useTranslator()
   const glossary = useGlossary()
   /** いまの用語集の内容を表す文字列。翻訳を始めたときの用語集と比べるために使う。 */
@@ -167,7 +175,6 @@ export function PdfViewer({ onOpenGlossary }: Props) {
   const [compare, setCompare] = useState<CompareState>({ state: 'closed' })
   /** 開いた PDF の履歴。新しい順。 */
   const [history, setHistory] = useState<HistoryEntry[]>([])
-  const [historyOpen, setHistoryOpen] = useState(false)
   /** PDF を作っている間の、進み具合の表示。失敗した場合は、その知らせ。作っていなければ null。 */
   const [saving, setSaving] = useState<string | null>(null)
   /** PDF を作っている最中かどうか。 */
@@ -427,7 +434,7 @@ export function PdfViewer({ onOpenGlossary }: Props) {
   /** 履歴から選んだ PDF を開く。 */
   const openFromHistory = useCallback(
     (entry: HistoryEntry) => {
-      setHistoryOpen(false)
+      onSelectHistory()
       void openData(
         entry.name,
         async () => {
@@ -438,7 +445,7 @@ export function PdfViewer({ onOpenGlossary }: Props) {
         `${entry.name} を履歴から開いています…`,
       )
     },
-    [openData],
+    [openData, onSelectHistory],
   )
 
   function removeFromHistory(id: string): void {
@@ -591,6 +598,8 @@ export function PdfViewer({ onOpenGlossary }: Props) {
           <button type="submit" disabled={arxivInput.trim().length === 0}>
             arXiv から開く
           </button>
+          {/* PDF を開いたあとは、接続の状態を、操作の帯の倍率の横に出す。 */}
+          {!opened && <ConnectionBadge onOpen={onOpenServerSettings} />}
         </form>
         {(status.state !== 'idle' || !opened) && (
           <p className="status" role="status">
@@ -601,51 +610,34 @@ export function PdfViewer({ onOpenGlossary }: Props) {
         )}
       </section>
 
-      {/* 画面の左上に置く、履歴を開くボタン。 */}
-      <button
-        type="button"
-        className="menu-button"
-        onClick={() => setHistoryOpen((current) => !current)}
-        aria-expanded={historyOpen}
-        aria-controls="history-panel"
-        aria-label={`開いた PDF の履歴(${history.length} 件)`}
-        title={`開いた PDF の履歴(${history.length} 件)`}
-      >
-        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-          <path d="M4 6h16M4 12h16M4 18h16" />
-        </svg>
-      </button>
-
-      {historyOpen && (
-        <aside id="history-panel" className="history" aria-label="開いた PDF の履歴">
-          <div className="history-head">
-            <strong>履歴</strong>
-            <button type="button" onClick={() => setHistoryOpen(false)} aria-label="履歴を閉じる">
-              ×
-            </button>
-          </div>
-          {history.length === 0 ? (
-            <p className="status">開いた PDF が、ここに並びます。</p>
-          ) : (
-            <ul>
-              {history.map((entry) => (
-                <li key={entry.id} className={opened?.id === entry.id ? 'current' : undefined}>
-                  <button type="button" className="history-open" onClick={() => openFromHistory(entry)} aria-current={opened?.id === entry.id ? 'true' : undefined}>
-                    <span className="history-name">{entry.name}</span>
-                    <span className="status">
-                      {entry.pages} ページ・{formatBytes(entry.bytes)}・{formatTime(entry.openedAt)}
-                    </span>
-                  </button>
-                  <button type="button" className="history-remove" onClick={() => removeFromHistory(entry.id)} aria-label={`${entry.name} を履歴から消す`} title="履歴から消す(保存してある訳文は残ります)">
-                    ×
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-          <p className="status">PDF のファイルは、このブラウザの中に保存しています。</p>
-        </aside>
-      )}
+      {/* 履歴の一覧は、メニューの中に描く。 */}
+      {historySlot &&
+        createPortal(
+          <section className="menu-history" aria-label="開いた PDF の履歴">
+            <strong>開いた PDF の履歴</strong>
+            {history.length === 0 ? (
+              <p className="status">開いた PDF が、ここに並びます。</p>
+            ) : (
+              <ul>
+                {history.map((entry) => (
+                  <li key={entry.id} className={opened?.id === entry.id ? 'current' : undefined}>
+                    <button type="button" className="history-open" onClick={() => openFromHistory(entry)} aria-current={opened?.id === entry.id ? 'true' : undefined}>
+                      <span className="history-name">{entry.name}</span>
+                      <span className="status">
+                        {entry.pages} ページ・{formatBytes(entry.bytes)}・{formatTime(entry.openedAt)}
+                      </span>
+                    </button>
+                    <button type="button" className="history-remove" onClick={() => removeFromHistory(entry.id)} aria-label={`${entry.name} を履歴から消す`} title="履歴から消す(保存してある訳文は残ります)">
+                      ×
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <p className="status">PDF のファイルは、このブラウザの中に保存しています。</p>
+          </section>,
+          historySlot,
+        )}
 
       {opened && (
         <>
@@ -682,6 +674,7 @@ export function PdfViewer({ onOpenGlossary }: Props) {
                 ))}
               </select>
             </label>
+            <ConnectionBadge onOpen={onOpenServerSettings} />
             <span className="toolbar-end">
               <button type="button" onClick={onOpenGlossary}>
                 用語集({glossary.entries.length} 語)

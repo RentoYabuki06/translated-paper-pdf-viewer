@@ -111,18 +111,6 @@ footer {
   margin-top: 2rem;
 }
 
-.tabs {
-  display: flex;
-  gap: 0.5rem;
-  margin-bottom: 1rem;
-}
-
-.tabs button[aria-pressed='true'] {
-  border-color: var(--accent);
-  color: var(--accent);
-  font-weight: 600;
-}
-
 .pdf-viewer.dragging {
   outline: 2px dashed var(--accent);
   outline-offset: 0.5rem;
@@ -461,18 +449,23 @@ footer {
 }
 
 /* 翻訳サーバーとの接続の状態を、見出しの横に短く示す。 */
-.tabs .badge {
-  margin-left: auto;
-  font-size: 0.85rem;
+.badge {
+  padding: 0.15rem 0.5rem;
+  font-size: 0.8rem;
   color: var(--muted);
+  background: transparent;
 }
 
-.tabs .badge.ok {
+.open-row .badge {
+  margin-left: auto;
+}
+
+.badge.ok {
   border-color: light-dark(#26a269, #57e389);
   color: light-dark(#1b7a4c, #8ff0a4);
 }
 
-.tabs .badge.error {
+.badge.error {
   border-color: var(--error);
   color: var(--error);
 }
@@ -707,8 +700,8 @@ footer {
   padding: 0 1rem;
 }
 
-/* 開いた PDF の履歴。画面の左端に重ねて出す。 */
-.history {
+/* メニュー(画面の切り替えと、開いた PDF の履歴)。画面の左端に重ねて出す。 */
+.menu {
   position: fixed;
   top: 0;
   bottom: 0;
@@ -727,13 +720,42 @@ footer {
   box-shadow: 4px 0 16px rgb(0 0 0 / 0.12);
 }
 
-.history-head {
+.menu[hidden] {
+  display: none;
+}
+
+.menu-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.menu-nav button {
+  text-align: left;
+  background: transparent;
+}
+
+.menu-nav button[aria-pressed='true'] {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.menu-history {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.menu-head {
   display: flex;
   justify-content: space-between;
   align-items: center;
 }
 
-.history ul {
+.menu-history ul {
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
@@ -742,7 +764,7 @@ footer {
   list-style: none;
 }
 
-.history li {
+.menu-history li {
   display: flex;
   gap: 0.25rem;
   align-items: stretch;
@@ -757,7 +779,7 @@ footer {
   background: transparent;
 }
 
-.history li.current .history-open {
+.menu-history li.current .history-open {
   border-color: var(--accent);
 }
 
@@ -769,7 +791,7 @@ footer {
 }
 
 .history-remove,
-.history-head button {
+.menu-head button {
   flex: none;
   padding: 0.1rem 0.5rem;
   border-color: transparent;
@@ -778,11 +800,11 @@ footer {
 }
 
 .history-remove:hover,
-.history-head button:hover {
+.menu-head button:hover {
   border-color: var(--border);
 }
 
-/* 履歴を開く、3 本線のボタン。画面の左上に固定する。 */
+/* メニューを開く、3 本線のボタン。画面の左上に固定する。 */
 .menu-button {
   position: fixed;
   top: 0.75rem;
