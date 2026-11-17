@@ -567,9 +567,6 @@ export function PdfViewer({ onOpenGlossary }: Props) {
     >
       <section className="panel">
         <form className="row open-row" onSubmit={onSubmitArxiv}>
-          <button type="button" onClick={() => setHistoryOpen((current) => !current)} aria-expanded={historyOpen} aria-controls="history-panel">
-            履歴({history.length})
-          </button>
           <label className="file-button" title="この画面へ PDF をドラッグ&ドロップしても開けます">
             PDF のファイルを選ぶ
             <input
@@ -603,6 +600,21 @@ export function PdfViewer({ onOpenGlossary }: Props) {
           </p>
         )}
       </section>
+
+      {/* 画面の左上に置く、履歴を開くボタン。 */}
+      <button
+        type="button"
+        className="menu-button"
+        onClick={() => setHistoryOpen((current) => !current)}
+        aria-expanded={historyOpen}
+        aria-controls="history-panel"
+        aria-label={`開いた PDF の履歴(${history.length} 件)`}
+        title={`開いた PDF の履歴(${history.length} 件)`}
+      >
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+          <path d="M4 6h16M4 12h16M4 18h16" />
+        </svg>
+      </button>
 
       {historyOpen && (
         <aside id="history-panel" className="history" aria-label="開いた PDF の履歴">

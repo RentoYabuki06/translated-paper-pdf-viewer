@@ -781,3 +781,15 @@ footer {
 .history-head button:hover {
   border-color: var(--border);
 }
+
+/* 履歴を開く、3 本線のボタン。画面の左上に固定する。 */
+.menu-button {
+  position: fixed;
+  top: 0.75rem;
+  left: 0.75rem;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  padding: 0.45rem;
+  background: Canvas;
+}
