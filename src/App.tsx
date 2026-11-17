@@ -54,7 +54,7 @@ export function App() {
 
           {/* 画面を切り替えても入力や開いた PDF が消えないよう、すべてを描画したまま表示だけを切り替える。 */}
           <div hidden={tab !== 'pdf'}>
-            <PdfViewer onOpenServerSettings={() => setTab('server')} onOpenGlossary={() => setTab('glossary')} />
+            <PdfViewer onOpenGlossary={() => setTab('glossary')} />
           </div>
           <div hidden={tab !== 'paste'}>
             <PasteTranslate onOpenServerSettings={() => setTab('server')} onOpenGlossary={() => setTab('glossary')} />

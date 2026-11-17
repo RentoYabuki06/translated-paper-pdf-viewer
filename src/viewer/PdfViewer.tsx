@@ -5,7 +5,7 @@
 
 import type { PDFDocumentProxy } from 'pdfjs-dist'
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
-import type { DragEvent, FormEvent } from 'react'
+import type { DragEvent, FormEvent, ReactNode } from 'react'
 import { LayoutDetector, MODEL_BYTES } from '../layout/ortWebClient.ts'
 import type { LayoutBackend } from '../layout/types.ts'
 import { median } from '../lib/stats.ts'
@@ -13,7 +13,6 @@ import { arxivPdfUrl, parseArxivId } from '../pdf/arxiv.ts'
 import { loadPdf } from '../pdf/pdfjs.ts'
 import { openTranslationCache } from '../translate/cache.ts'
 import { candidateModelIds, loadKnownModels, rememberModel } from '../translate/models.ts'
-import { describeTarget } from '../translate/settings.ts'
 import { ComparePanel } from './ComparePanel.tsx'
 import { useGlossary } from './glossaryContext.ts'
 import { PageView } from './PageView.tsx'
@@ -72,6 +71,29 @@ const NO_PROGRESS: SessionProgress = {
 /** 確認用の枠を、どれも表示しない指定。原文を並べるときの、左のページに使う。 */
 const NO_XRAY: XRayOptions = { paragraphs: false, lines: false, runs: false, math: false, regions: false }
 
+/**
+ * URL に ?debug が付いている場合に true。
+ * 解析結果の確認用の枠と、レイアウト検出の操作を、画面に出す。ふだんは出さない。
+ */
+const DEBUG = new URLSearchParams(globalThis.location?.search ?? '').has('debug')
+
+/** 確認用の枠の、初めの状態。 */
+const DEBUG_XRAY: XRayOptions = { paragraphs: true, lines: false, runs: false, math: true, regions: false }
+
+/** 翻訳の進み具合を、短い文と、くわしい文にする。くわしい文は、マウスを重ねたときに表示する。 */
+function describeProgress(progress: SessionProgress, pages: number): { short: string; detail: string } {
+  const state = progress.translating ? '翻訳しています' : progress.stopped ? '翻訳を中止しました' : '翻訳が終わりました'
+  const short =
+    `${state}: ${progress.done + progress.kept} / ${progress.units} 段落` +
+    (progress.failed > 0 ? `、失敗 ${progress.failed} 件` : '') +
+    (progress.kept > 0 ? `、原文のまま ${progress.kept} 件` : '')
+  const detail =
+    `${progress.preparedPages} / ${pages} ページを準備済み、段やページをまたいでつないだ段落 ${progress.merged} 件、依頼 ${progress.requests} 件、保存分の再利用 ${progress.cached} 件、失敗 ${progress.failed} 件、途中で切れた訳文 ${progress.truncated} 件、文ごとに訳し直した段落 ${progress.retried} 件、数式の目印がそろわず原文のまま ${progress.kept} 件` +
+    (progress.glossaryTerms > 0 ? `、用語集の語が出てくる段落 ${progress.glossaryUnits} 件` : '') +
+    (progress.glossaryDropped > 0 ? `、うち用語集を付けずに訳し直した段落 ${progress.glossaryDropped} 件` : '')
+  return { short, detail }
+}
+
 const noSubscription = () => () => undefined
 const noProgress = () => NO_PROGRESS
 
@@ -89,13 +111,11 @@ function messageOf(error: unknown): string {
 }
 
 interface Props {
-  /** 翻訳サーバーの設定の画面を開く。 */
-  onOpenServerSettings: () => void
   /** 用語集の画面を開く。 */
   onOpenGlossary: () => void
 }
 
-export function PdfViewer({ onOpenServerSettings, onOpenGlossary }: Props) {
+export function PdfViewer({ onOpenGlossary }: Props) {
   const translator = useTranslator()
   const glossary = useGlossary()
   /** いまの用語集の内容を表す文字列。翻訳を始めたときの用語集と比べるために使う。 */
@@ -107,13 +127,7 @@ export function PdfViewer({ onOpenServerSettings, onOpenGlossary }: Props) {
   const [arxivInput, setArxivInput] = useState('')
   const [scale, setScale] = useState(1.5)
   const [showWithoutText, setShowWithoutText] = useState(false)
-  const [xray, setXray] = useState<XRayOptions>({
-    paragraphs: true,
-    lines: false,
-    runs: false,
-    math: true,
-    regions: false,
-  })
+  const [xray, setXray] = useState<XRayOptions>(DEBUG ? DEBUG_XRAY : NO_XRAY)
   const [dragging, setDragging] = useState(false)
   const [backend, setBackend] = useState<LayoutBackend>('webgpu')
   const [detectorState, setDetectorState] = useState<DetectorState>({ state: 'off' })
@@ -233,7 +247,7 @@ export function PdfViewer({ onOpenServerSettings, onOpenGlossary }: Props) {
       // 準備の間に、別の PDF を開いた場合は始めない。
       if (openedRef.current?.session !== session) return
       // 訳文を読みやすくするため、確認用の枠を消す。
-      setXray({ paragraphs: false, lines: false, runs: false, math: false, regions: false })
+      setXray(NO_XRAY)
       setShowTranslations(true)
       // 訳文を比べる画面で、このモデルの訳文を探せるよう、名前を覚えておく。
       rememberModel(connected.info.modelId)
@@ -373,6 +387,68 @@ export function PdfViewer({ onOpenServerSettings, onOpenGlossary }: Props) {
   const glossaryChanged =
     translatedGlossary !== null && translatedGlossary !== glossarySignature && !progress.translating && !startingTranslation
 
+  const summary = opened && (progress.translating || hasTranslations) ? describeProgress(progress, opened.document.numPages) : null
+  /** 操作の帯の下に出す、状態の表示。出すものが無ければ、行そのものを出さない。 */
+  const statusNodes: ReactNode[] = []
+  if (detectorState.state === 'loading') {
+    statusNodes.push(
+      <span key="detector">
+        {detectorState.loaded > 0
+          ? `レイアウト検出のモデルを取得しています… ${Math.round((detectorState.loaded / detectorState.total) * 100)}% `
+          : 'レイアウト検出のモデルを読み込んでいます… '}
+      </span>,
+    )
+  }
+  if (detectorState.state === 'error') {
+    statusNodes.push(
+      <span key="detector-error" className="error">
+        レイアウト検出を始められませんでした: {detectorState.message}{' '}
+      </span>,
+    )
+  }
+  if (DEBUG && detectorState.state === 'ready') {
+    statusNodes.push(
+      <span key="detector-ready">
+        {`${detectorState.detector.info.backend === 'webgpu' ? 'WebGPU' : `WebAssembly(${detectorState.detector.info.threads} スレッド)`}で検出します。` +
+          (times.length > 0
+            ? `検出済み ${times.length} ページ: 中央値 ${Math.round(median(times))} ミリ秒、最大 ${Math.round(Math.max(...times))} ミリ秒 `
+            : ' ')}
+      </span>,
+    )
+  }
+  if (translationError) {
+    statusNodes.push(
+      <span key="error" className="error">
+        {translationError}{' '}
+      </span>,
+    )
+  } else if (startingTranslation) {
+    statusNodes.push(<span key="starting">翻訳の準備をしています… </span>)
+  }
+  if (summary) {
+    statusNodes.push(
+      <span key="summary" title={summary.detail}>
+        {summary.short}
+      </span>,
+    )
+  }
+  if (printing) {
+    statusNodes.push(
+      <span key="printing" className="notice">
+        {' '}
+        {printing}
+      </span>,
+    )
+  }
+  if (glossaryChanged) {
+    statusNodes.push(
+      <span key="glossary" className="notice">
+        {' '}
+        用語集が変わりました。「この PDF を翻訳する」を押すと、訳語の指定が変わる段落だけを訳し直します。
+      </span>,
+    )
+  }
+
   return (
     <div
       className={dragging ? 'pdf-viewer dragging' : 'pdf-viewer'}
@@ -384,8 +460,8 @@ export function PdfViewer({ onOpenServerSettings, onOpenGlossary }: Props) {
       onDrop={onDrop}
     >
       <section className="panel">
-        <div className="row">
-          <label className="file-button">
+        <form className="row open-row" onSubmit={onSubmitArxiv}>
+          <label className="file-button" title="この画面へ PDF をドラッグ&ドロップしても開けます">
             PDF のファイルを選ぶ
             <input
               type="file"
@@ -398,14 +474,11 @@ export function PdfViewer({ onOpenServerSettings, onOpenGlossary }: Props) {
               }}
             />
           </label>
-          <span className="status">または、この画面へ PDF をドラッグ&ドロップします。</span>
-        </div>
-        <form className="row" onSubmit={onSubmitArxiv}>
           <input
             type="text"
             value={arxivInput}
             onChange={(event) => setArxivInput(event.target.value)}
-            placeholder="arXiv の ID または URL(例: 1706.03762)"
+            placeholder="arXiv の ID または URL"
             aria-label="arXiv の ID または URL"
             spellCheck={false}
           />
@@ -413,17 +486,37 @@ export function PdfViewer({ onOpenServerSettings, onOpenGlossary }: Props) {
             arXiv から開く
           </button>
         </form>
-        <p className="status" role="status">
-          {status.state === 'loading' && status.message}
-          {status.state === 'error' && <span className="error">{status.message}</span>}
-        </p>
+        {(status.state !== 'idle' || !opened) && (
+          <p className="status" role="status">
+            {status.state === 'loading' && status.message}
+            {status.state === 'error' && <span className="error">{status.message}</span>}
+            {status.state === 'idle' && 'PDF は、この画面へドラッグ&ドロップしても開けます。'}
+          </p>
+        )}
       </section>
 
       {opened && (
         <>
           <section className="panel toolbar">
-            <strong>{opened.name}</strong>
-            <span className="status">{opened.document.numPages} ページ</span>
+            {progress.translating ? (
+              <button type="button" onClick={() => opened.session.stopTranslation()}>
+                中止
+              </button>
+            ) : (
+              <button type="button" className="primary" onClick={() => void startTranslation()} disabled={startingTranslation}>
+                この PDF を翻訳する
+              </button>
+            )}
+            {hasTranslations && (
+              <label>
+                <input type="checkbox" checked={showTranslations} onChange={(event) => setShowTranslations(event.target.checked)} />
+                訳文を表示
+              </label>
+            )}
+            <label>
+              <input type="checkbox" checked={sideBySide} onChange={(event) => setSideBySide(event.target.checked)} />
+              原文を左に並べる
+            </label>
             <label>
               倍率{' '}
               <select value={scale} onChange={(event) => setScale(Number(event.target.value))}>
@@ -434,106 +527,10 @@ export function PdfViewer({ onOpenServerSettings, onOpenGlossary }: Props) {
                 ))}
               </select>
             </label>
-            <span className="toolbar-group">
-              解析結果の表示:
-              {XRAY_LABELS.map(({ key, label }) => (
-                <label key={key}>
-                  <input
-                    type="checkbox"
-                    checked={xray[key]}
-                    onChange={(event) => setXray((current) => ({ ...current, [key]: event.target.checked }))}
-                  />
-                  {label}
-                </label>
-              ))}
-            </span>
-            <label>
-              <input
-                type="checkbox"
-                checked={showWithoutText}
-                onChange={(event) => setShowWithoutText(event.target.checked)}
-              />
-              文字を描かない描画を見る
-            </label>
-            <span className="status">
-              解析済み {progress.analyzedPages} ページ: 段落 {progress.paragraphs}、行 {progress.lines}、文中の数式{' '}
-              {progress.mathSpans}
-            </span>
-            <span className="toolbar-group">
-              レイアウト検出:
-              <label>
-                実行の方法{' '}
-                <select
-                  value={backend}
-                  onChange={(event) => setBackend(event.target.value as LayoutBackend)}
-                  disabled={detectorState.state === 'loading' || detectorState.state === 'ready'}
-                >
-                  <option value="webgpu">WebGPU</option>
-                  <option value="wasm">WebAssembly</option>
-                </select>
-              </label>
-              {detectorState.state === 'ready' ? (
-                <button type="button" onClick={disableDetector}>
-                  無効にする
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => {
-                    void enableDetector().then((created) => {
-                      if (created) setXray((current) => ({ ...current, regions: true }))
-                    })
-                  }}
-                  disabled={detectorState.state === 'loading'}
-                >
-                  有効にする(初回は約 130 MB を取得)
-                </button>
-              )}
-            </span>
-            <span className="status" role="status">
-              {detectorState.state === 'loading' &&
-                (detectorState.loaded > 0
-                  ? `モデルを取得しています… ${Math.round((detectorState.loaded / detectorState.total) * 100)}%`
-                  : 'モデルを読み込んでいます…')}
-              {detectorState.state === 'error' && <span className="error">{detectorState.message}</span>}
-              {detectorState.state === 'ready' &&
-                `${detectorState.detector.info.backend === 'webgpu' ? 'WebGPU' : `WebAssembly(${detectorState.detector.info.threads} スレッド)`}で検出します。` +
-                  (times.length > 0
-                    ? `検出済み ${times.length} ページ: 中央値 ${Math.round(median(times))} ミリ秒、最大 ${Math.round(Math.max(...times))} ミリ秒`
-                    : '')}
-            </span>
-            <span className="toolbar-group">
-              翻訳:
-              <span className="status">{describeTarget(translator.settings)}</span>
-              <button type="button" onClick={onOpenServerSettings} disabled={progress.translating || startingTranslation}>
-                設定
-              </button>
+            <span className="toolbar-end">
               <button type="button" onClick={onOpenGlossary}>
                 用語集({glossary.entries.length} 語)
               </button>
-              {progress.translating ? (
-                <button type="button" onClick={() => opened.session.stopTranslation()}>
-                  中止
-                </button>
-              ) : (
-                <button type="button" className="primary" onClick={() => void startTranslation()} disabled={startingTranslation}>
-                  この PDF を翻訳する
-                </button>
-              )}
-              {hasTranslations && (
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={showTranslations}
-                    onChange={(event) => setShowTranslations(event.target.checked)}
-                  />
-                  訳文を表示
-                </label>
-              )}
-              <label>
-                <input type="checkbox" checked={sideBySide} onChange={(event) => setSideBySide(event.target.checked)} />
-                原文を左に並べる
-              </label>
               <button type="button" onClick={() => void openComparison()} disabled={compare.state === 'loading'}>
                 モデルごとの訳文を比べる
               </button>
@@ -546,21 +543,75 @@ export function PdfViewer({ onOpenServerSettings, onOpenGlossary }: Props) {
                 PDF に保存・印刷
               </button>
             </span>
-            <span className="status" role="status">
-              {translationError && <span className="error">{translationError}</span>}
-              {startingTranslation && !translationError && '翻訳の準備をしています…'}
-              {(progress.translating || hasTranslations) &&
-                `${progress.translating ? '翻訳しています' : progress.stopped ? '翻訳を中止しました' : '翻訳が終わりました'}: ${progress.done + progress.kept} / ${progress.units} 段落(${progress.preparedPages} / ${opened.document.numPages} ページを準備済み、段やページをまたいでつないだ段落 ${progress.merged} 件、依頼 ${progress.requests} 件、保存分の再利用 ${progress.cached} 件、失敗 ${progress.failed} 件、途中で切れた訳文 ${progress.truncated} 件、文ごとに訳し直した段落 ${progress.retried} 件、数式の目印がそろわず原文のまま ${progress.kept} 件${
-                  progress.glossaryTerms > 0 ? `、用語集の語が出てくる段落 ${progress.glossaryUnits} 件` : ''
-                }${progress.glossaryDropped > 0 ? `、うち用語集を付けずに訳し直した段落 ${progress.glossaryDropped} 件` : ''})`}
-              {printing && <span className="notice"> {printing}</span>}
-              {glossaryChanged && (
-                <span className="notice">
-                  {' '}
-                  用語集が変わりました。「この PDF を翻訳する」を押すと、訳語の指定が変わる段落だけを訳し直します。
+            {/* 解析結果の確認用の操作。URL に ?debug を付けたときだけ出す。 */}
+            {DEBUG && (
+              <div className="toolbar-debug">
+                <span className="status">
+                  {opened.name}、{opened.document.numPages} ページ
                 </span>
-              )}
-            </span>
+              <span className="toolbar-group">
+                解析結果の表示:
+                {XRAY_LABELS.map(({ key, label }) => (
+                  <label key={key}>
+                    <input
+                      type="checkbox"
+                      checked={xray[key]}
+                      onChange={(event) => setXray((current) => ({ ...current, [key]: event.target.checked }))}
+                    />
+                    {label}
+                  </label>
+                ))}
+              </span>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={showWithoutText}
+                  onChange={(event) => setShowWithoutText(event.target.checked)}
+                />
+                文字を描かない描画を見る
+              </label>
+              <span className="status">
+                解析済み {progress.analyzedPages} ページ: 段落 {progress.paragraphs}、行 {progress.lines}、文中の数式{' '}
+                {progress.mathSpans}
+              </span>
+              <span className="toolbar-group">
+                レイアウト検出:
+                <label>
+                  実行の方法{' '}
+                  <select
+                    value={backend}
+                    onChange={(event) => setBackend(event.target.value as LayoutBackend)}
+                    disabled={detectorState.state === 'loading' || detectorState.state === 'ready'}
+                  >
+                    <option value="webgpu">WebGPU</option>
+                    <option value="wasm">WebAssembly</option>
+                  </select>
+                </label>
+                {detectorState.state === 'ready' ? (
+                  <button type="button" onClick={disableDetector}>
+                    無効にする
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void enableDetector().then((created) => {
+                        if (created) setXray((current) => ({ ...current, regions: true }))
+                      })
+                    }}
+                    disabled={detectorState.state === 'loading'}
+                  >
+                    有効にする(初回は約 130 MB を取得)
+                  </button>
+                )}
+              </span>
+              </div>
+            )}
+            {statusNodes.length > 0 && (
+              <span className="status toolbar-status" role="status">
+                {statusNodes}
+              </span>
+            )}
           </section>
 
           {compare.state === 'loading' && (
