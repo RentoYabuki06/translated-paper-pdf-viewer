@@ -16,7 +16,8 @@
     "probe:speed": "node scripts/probe-speed.ts",
     "probe:placeholders": "node scripts/probe-placeholders.ts",
     "probe:context": "node scripts/probe-context.ts",
-    "probe:backends": "node scripts/probe-backends.ts"
+    "probe:backends": "node scripts/probe-backends.ts",
+    "probe:glossary": "node scripts/probe-glossary.ts"
   },
   "dependencies": {
     "onnxruntime-web": "^1.31.1",
