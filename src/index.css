@@ -706,3 +706,78 @@ footer {
   box-sizing: border-box;
   padding: 0 1rem;
 }
+
+/* 開いた PDF の履歴。画面の左端に重ねて出す。 */
+.history {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  width: 19rem;
+  max-width: 85vw;
+  box-sizing: border-box;
+  padding: 1rem;
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
+  background: Canvas;
+  box-shadow: 4px 0 16px rgb(0 0 0 / 0.12);
+}
+
+.history-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.history ul {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.history li {
+  display: flex;
+  gap: 0.25rem;
+  align-items: stretch;
+}
+
+.history-open {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  text-align: left;
+  background: transparent;
+}
+
+.history li.current .history-open {
+  border-color: var(--accent);
+}
+
+.history-name {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-remove,
+.history-head button {
+  flex: none;
+  padding: 0.1rem 0.5rem;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+
+.history-remove:hover,
+.history-head button:hover {
+  border-color: var(--border);
+}

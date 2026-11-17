@@ -18,6 +18,8 @@ import { candidateModelIds, loadKnownModels, rememberModel } from '../translate/
 import { ComparePanel } from './ComparePanel.tsx'
 import { useGlossary } from './glossaryContext.ts'
 import { clearPainterCache, paintRow } from './pagePainter.ts'
+import { formatBytes, formatTime, historyStore } from './history.ts'
+import type { HistoryEntry } from './history.ts'
 import { PageView } from './PageView.tsx'
 import type { PageSize } from './PageView.tsx'
 import { DocumentSession } from './session.ts'
@@ -36,6 +38,8 @@ const XRAY_LABELS: { key: keyof XRayOptions; label: string }[] = [
 ]
 
 interface Opened {
+  /** PDF を見分ける値。履歴の中で、いま開いている PDF を示すために使う。 */
+  id: string
   name: string
   document: PDFDocumentProxy
   session: DocumentSession
@@ -161,6 +165,9 @@ export function PdfViewer({ onOpenGlossary }: Props) {
   /** 翻訳を始める準備(接続の確認やモデルの読み込み)をしている間は true。 */
   const [startingTranslation, setStartingTranslation] = useState(false)
   const [compare, setCompare] = useState<CompareState>({ state: 'closed' })
+  /** 開いた PDF の履歴。新しい順。 */
+  const [history, setHistory] = useState<HistoryEntry[]>([])
+  const [historyOpen, setHistoryOpen] = useState(false)
   /** PDF を作っている間の、進み具合の表示。失敗した場合は、その知らせ。作っていなければ null。 */
   const [saving, setSaving] = useState<string | null>(null)
   /** PDF を作っている最中かどうか。 */
@@ -349,6 +356,8 @@ export function PdfViewer({ onOpenGlossary }: Props) {
     setStatus({ state: 'loading', message: loadingMessage })
     try {
       const data = await getData()
+      // PDF.js に渡したデータは使えなくなるので、履歴に入れる分を、先に複製する。
+      const copy = data.slice(0)
       const document = await loadPdf(data).promise
       const firstPage = await document.getPage(1)
       const viewport = firstPage.getViewport({ scale: 1 })
@@ -360,13 +369,20 @@ export function PdfViewer({ onOpenGlossary }: Props) {
       void openedRef.current?.document.loadingTask.destroy()
       const session = new DocumentSession(document)
       session.setDetector(detectorRef.current)
-      const next = { name, document, session, firstPageSize: { width: viewport.width, height: viewport.height } }
+      const id = document.fingerprints[0] ?? name
+      const next = { id, name, document, session, firstPageSize: { width: viewport.width, height: viewport.height } }
       openedRef.current = next
       setTranslationError(null)
       setTranslatedGlossary(null)
       setCompare({ state: 'closed' })
       setOpened(next)
       setStatus({ state: 'idle' })
+      // 履歴に入れる。入れられなくても、表示と翻訳は続ける。
+      historyStore
+        .save({ id, name, pages: document.numPages, bytes: copy.byteLength, openedAt: Date.now() }, copy)
+        .then(() => historyStore.list())
+        .then(setHistory)
+        .catch((error: unknown) => console.warn('[history] PDF を履歴に入れられませんでした:', error))
     } catch (error) {
       if (sequence === openSequence.current) {
         setStatus({ state: 'error', message: `PDF を開けませんでした: ${messageOf(error)}` })
@@ -399,6 +415,39 @@ export function PdfViewer({ onOpenGlossary }: Props) {
     },
     [openData],
   )
+
+  // 履歴の一覧を読む。
+  useEffect(() => {
+    historyStore
+      .list()
+      .then(setHistory)
+      .catch(() => undefined)
+  }, [])
+
+  /** 履歴から選んだ PDF を開く。 */
+  const openFromHistory = useCallback(
+    (entry: HistoryEntry) => {
+      setHistoryOpen(false)
+      void openData(
+        entry.name,
+        async () => {
+          const data = await historyStore.load(entry.id)
+          if (!data) throw new Error('履歴に、この PDF のファイルがありません')
+          return data
+        },
+        `${entry.name} を履歴から開いています…`,
+      )
+    },
+    [openData],
+  )
+
+  function removeFromHistory(id: string): void {
+    historyStore
+      .remove(id)
+      .then(() => historyStore.list())
+      .then(setHistory)
+      .catch((error: unknown) => setStatus({ state: 'error', message: `履歴から消せませんでした: ${messageOf(error)}` }))
+  }
 
   // URL に ?arxiv=<ID> が付いている場合は、その論文を開く。
   useEffect(() => {
@@ -518,6 +567,9 @@ export function PdfViewer({ onOpenGlossary }: Props) {
     >
       <section className="panel">
         <form className="row open-row" onSubmit={onSubmitArxiv}>
+          <button type="button" onClick={() => setHistoryOpen((current) => !current)} aria-expanded={historyOpen} aria-controls="history-panel">
+            履歴({history.length})
+          </button>
           <label className="file-button" title="この画面へ PDF をドラッグ&ドロップしても開けます">
             PDF のファイルを選ぶ
             <input
@@ -551,6 +603,37 @@ export function PdfViewer({ onOpenGlossary }: Props) {
           </p>
         )}
       </section>
+
+      {historyOpen && (
+        <aside id="history-panel" className="history" aria-label="開いた PDF の履歴">
+          <div className="history-head">
+            <strong>履歴</strong>
+            <button type="button" onClick={() => setHistoryOpen(false)} aria-label="履歴を閉じる">
+              ×
+            </button>
+          </div>
+          {history.length === 0 ? (
+            <p className="status">開いた PDF が、ここに並びます。</p>
+          ) : (
+            <ul>
+              {history.map((entry) => (
+                <li key={entry.id} className={opened?.id === entry.id ? 'current' : undefined}>
+                  <button type="button" className="history-open" onClick={() => openFromHistory(entry)} aria-current={opened?.id === entry.id ? 'true' : undefined}>
+                    <span className="history-name">{entry.name}</span>
+                    <span className="status">
+                      {entry.pages} ページ・{formatBytes(entry.bytes)}・{formatTime(entry.openedAt)}
+                    </span>
+                  </button>
+                  <button type="button" className="history-remove" onClick={() => removeFromHistory(entry.id)} aria-label={`${entry.name} を履歴から消す`} title="履歴から消す(保存してある訳文は残ります)">
+                    ×
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="status">PDF のファイルは、このブラウザの中に保存しています。</p>
+        </aside>
+      )}
 
       {opened && (
         <>
