@@ -51,6 +51,7 @@ const NO_PROGRESS: SessionProgress = {
   mathSpans: 0,
   detectTimes: [],
   translating: false,
+  stopped: false,
   preparedPages: 0,
   units: 0,
   merged: 0,
@@ -435,7 +436,7 @@ export function PdfViewer({ onOpenServerSettings, onOpenGlossary }: Props) {
               {translationError && <span className="error">{translationError}</span>}
               {startingTranslation && !translationError && '翻訳の準備をしています…'}
               {(progress.translating || hasTranslations) &&
-                `${progress.translating ? '翻訳しています' : '翻訳が終わりました'}: ${progress.done + progress.kept} / ${progress.units} 段落(${progress.preparedPages} / ${opened.document.numPages} ページを準備済み、段やページをまたいでつないだ段落 ${progress.merged} 件、依頼 ${progress.requests} 件、保存分の再利用 ${progress.cached} 件、失敗 ${progress.failed} 件、途中で切れた訳文 ${progress.truncated} 件、文ごとに訳し直した段落 ${progress.retried} 件、数式の目印がそろわず原文のまま ${progress.kept} 件${
+                `${progress.translating ? '翻訳しています' : progress.stopped ? '翻訳を中止しました' : '翻訳が終わりました'}: ${progress.done + progress.kept} / ${progress.units} 段落(${progress.preparedPages} / ${opened.document.numPages} ページを準備済み、段やページをまたいでつないだ段落 ${progress.merged} 件、依頼 ${progress.requests} 件、保存分の再利用 ${progress.cached} 件、失敗 ${progress.failed} 件、途中で切れた訳文 ${progress.truncated} 件、文ごとに訳し直した段落 ${progress.retried} 件、数式の目印がそろわず原文のまま ${progress.kept} 件${
                   progress.glossaryTerms > 0 ? `、用語集の語が出てくる段落 ${progress.glossaryUnits} 件` : ''
                 }${progress.glossaryDropped > 0 ? `、うち用語集を付けずに訳し直した段落 ${progress.glossaryDropped} 件` : ''})`}
               {glossaryChanged && (

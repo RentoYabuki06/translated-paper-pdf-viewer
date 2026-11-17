@@ -103,6 +103,8 @@ export interface SessionProgress {
   detectTimes: readonly number[]
   /** 翻訳を依頼している最中(待っている単位がある)なら true。 */
   translating: boolean
+  /** 直近の翻訳を、訳し終える前に止めた場合に true。次に翻訳を始めるまで、そのままにする。 */
+  stopped: boolean
   /** 翻訳単位を確定し終えたページの数。 */
   preparedPages: number
   units: number
@@ -192,6 +194,8 @@ export class DocumentSession {
   private requests = 0
   /** 直近の翻訳で使った用語集の項目の数。 */
   private glossaryTerms = 0
+  /** 直近の翻訳を、訳し終える前に止めた場合に true。 */
+  private stopped = false
   private disposed = false
   /** 字形の実際の範囲を測る関数。数式の範囲を決めるときに使う。 */
   private readonly measureInk: GlyphInkMeasurer = createCanvasInkMeasurer()
@@ -250,6 +254,7 @@ export class DocumentSession {
       mathSpans: 0,
       detectTimes: [...this.detectTimes.values()],
       translating: this.translation !== null && (!this.translation.prepared || this.translation.queue.size > 0),
+      stopped: this.stopped,
       preparedPages: this.linked.size,
       units: 0,
       merged: 0,
@@ -321,6 +326,8 @@ export class DocumentSession {
   setDetector(detector: LayoutDetector | null): void {
     if (detector === this.detector) return
     this.stopTranslation()
+    // 訳文の状態を捨てるので、止めたことの記録も消す。
+    this.stopped = false
     this.detector = detector
     this.layoutPromises = new Map()
     this.detectTimes = new Map()
@@ -423,6 +430,7 @@ export class DocumentSession {
   ): void {
     if (!this.detector) throw new Error('翻訳の前に、レイアウト検出を有効にしてください')
     this.stopTranslation()
+    this.stopped = false
 
     const translation: ActiveTranslation = {
       backend,
@@ -607,6 +615,8 @@ export class DocumentSession {
   stopTranslation(): void {
     const translation = this.translation
     if (!translation) return
+    // 訳し終える前に止めた場合は、そのことを覚えておく。訳し終えたあとに呼ばれた場合は、止めたことにしない。
+    this.stopped = !translation.prepared || translation.queue.size > 0
     this.translation = null
     translation.queue.cancel()
     // 待っていた翻訳単位を、原文の表示に戻す。
