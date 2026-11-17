@@ -456,8 +456,13 @@ footer {
   background: transparent;
 }
 
-.open-row .badge {
-  margin-left: auto;
+/* 題名の行。右端に、接続の状態を置く。 */
+.app-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  align-items: center;
+  justify-content: space-between;
 }
 
 .badge.ok {

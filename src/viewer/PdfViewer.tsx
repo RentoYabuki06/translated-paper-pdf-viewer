@@ -17,7 +17,6 @@ import { loadPdf } from '../pdf/pdfjs.ts'
 import { openTranslationCache } from '../translate/cache.ts'
 import { candidateModelIds, loadKnownModels, rememberModel } from '../translate/models.ts'
 import { ComparePanel } from './ComparePanel.tsx'
-import { ConnectionBadge } from './ConnectionBadge.tsx'
 import { useGlossary } from './glossaryContext.ts'
 import { clearPainterCache, paintRow } from './pagePainter.ts'
 import { formatBytes, formatTime, historyStore } from './history.ts'
@@ -140,8 +139,6 @@ function messageOf(error: unknown): string {
 }
 
 interface Props {
-  /** 翻訳サーバーの設定の画面を開く。 */
-  onOpenServerSettings: () => void
   /** メニューの中の、履歴の一覧を描く場所。まだ無ければ null。 */
   historySlot: HTMLElement | null
   /** 履歴から PDF を選んだことを伝える。メニューを閉じて、この画面に切り替えてもらう。 */
@@ -150,7 +147,7 @@ interface Props {
   onOpenGlossary: () => void
 }
 
-export function PdfViewer({ onOpenServerSettings, onOpenGlossary, historySlot, onSelectHistory }: Props) {
+export function PdfViewer({ onOpenGlossary, historySlot, onSelectHistory }: Props) {
   const translator = useTranslator()
   const glossary = useGlossary()
   /** いまの用語集の内容を表す文字列。翻訳を始めたときの用語集と比べるために使う。 */
@@ -598,8 +595,6 @@ export function PdfViewer({ onOpenServerSettings, onOpenGlossary, historySlot, o
           <button type="submit" disabled={arxivInput.trim().length === 0}>
             arXiv から開く
           </button>
-          {/* PDF を開いたあとは、接続の状態を、操作の帯の倍率の横に出す。 */}
-          {!opened && <ConnectionBadge onOpen={onOpenServerSettings} />}
         </form>
         {(status.state !== 'idle' || !opened) && (
           <p className="status" role="status">
@@ -674,7 +669,6 @@ export function PdfViewer({ onOpenServerSettings, onOpenGlossary, historySlot, o
                 ))}
               </select>
             </label>
-            <ConnectionBadge onOpen={onOpenServerSettings} />
             <span className="toolbar-end">
               <button type="button" onClick={onOpenGlossary}>
                 用語集({glossary.entries.length} 語)

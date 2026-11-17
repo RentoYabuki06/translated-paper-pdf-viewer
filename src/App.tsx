@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { ConnectionBadge } from './viewer/ConnectionBadge.tsx'
 import { GlossaryPanel } from './viewer/GlossaryPanel.tsx'
 import { GlossaryProvider } from './viewer/GlossaryProvider.tsx'
 import { PasteTranslate } from './viewer/PasteTranslate.tsx'
@@ -67,12 +68,14 @@ export function App() {
         </aside>
 
         <main className="app">
-          <h1>翻訳論文 PDF ビューア</h1>
+          <header className="app-head">
+            <h1>翻訳論文 PDF ビューア</h1>
+            <ConnectionBadge onOpen={() => setTab('server')} />
+          </header>
 
           {/* 画面を切り替えても入力や開いた PDF が消えないよう、すべてを描画したまま表示だけを切り替える。 */}
           <div hidden={tab !== 'pdf'}>
             <PdfViewer
-              onOpenServerSettings={() => setTab('server')}
               onOpenGlossary={() => setTab('glossary')}
               historySlot={historySlot}
               onSelectHistory={() => {
