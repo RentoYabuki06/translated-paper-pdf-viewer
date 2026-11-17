@@ -69,6 +69,9 @@ const NO_PROGRESS: SessionProgress = {
   glossaryDropped: 0,
 }
 
+/** 確認用の枠を、どれも表示しない指定。原文を並べるときの、左のページに使う。 */
+const NO_XRAY: XRayOptions = { paragraphs: false, lines: false, runs: false, math: false, regions: false }
+
 const noSubscription = () => () => undefined
 const noProgress = () => NO_PROGRESS
 
@@ -115,6 +118,8 @@ export function PdfViewer({ onOpenServerSettings, onOpenGlossary }: Props) {
   const [backend, setBackend] = useState<LayoutBackend>('webgpu')
   const [detectorState, setDetectorState] = useState<DetectorState>({ state: 'off' })
   const [showTranslations, setShowTranslations] = useState(true)
+  /** true のとき、原文のページを左、訳文を重ねたページを右に、並べて表示する。 */
+  const [sideBySide, setSideBySide] = useState(false)
   const [translationError, setTranslationError] = useState<string | null>(null)
   /** 翻訳を始める準備(接続の確認やモデルの読み込み)をしている間は true。 */
   const [startingTranslation, setStartingTranslation] = useState(false)
@@ -483,6 +488,10 @@ export function PdfViewer({ onOpenServerSettings, onOpenGlossary }: Props) {
                   訳文を表示
                 </label>
               )}
+              <label>
+                <input type="checkbox" checked={sideBySide} onChange={(event) => setSideBySide(event.target.checked)} />
+                原文を左に並べる
+              </label>
               <button type="button" onClick={() => void openComparison()} disabled={compare.state === 'loading'}>
                 モデルごとの訳文を比べる
               </button>
@@ -526,21 +535,38 @@ export function PdfViewer({ onOpenServerSettings, onOpenGlossary }: Props) {
 
           {/* 比べる画面を開いている間も、ページの描画や翻訳の状態を保つため、隠すだけにする。 */}
           <div hidden={compare.state === 'ready'}>
-            <div className="pages">
-              {Array.from({ length: opened.document.numPages }, (_, index) => (
-                <PageView
-                  // PDF を開き直したときに、前の PDF の描画や解析結果を引き継がない。
-                  key={`${opened.document.fingerprints[0] ?? opened.name}-${index + 1}`}
-                  session={opened.session}
-                  pageNumber={index + 1}
-                  scale={scale}
-                  estimatedSize={opened.firstPageSize}
-                  showWithoutText={showWithoutText}
-                  showTranslations={showTranslations}
-                  detectorEnabled={detector !== null}
-                  xray={xray}
-                />
-              ))}
+            <div className={sideBySide ? 'pages side-by-side' : 'pages'}>
+              {Array.from({ length: opened.document.numPages }, (_, index) => {
+                // PDF を開き直したときに、前の PDF の描画や解析結果を引き継がない。
+                const key = `${opened.document.fingerprints[0] ?? opened.name}-${index + 1}`
+                return (
+                  <div key={key} className="page-row">
+                    {/* 左は、訳文も確認用の枠も重ねない、原文のままのページ。 */}
+                    {sideBySide && (
+                      <PageView
+                        session={opened.session}
+                        pageNumber={index + 1}
+                        scale={scale}
+                        estimatedSize={opened.firstPageSize}
+                        showWithoutText={false}
+                        showTranslations={false}
+                        detectorEnabled={detector !== null}
+                        xray={NO_XRAY}
+                      />
+                    )}
+                    <PageView
+                      session={opened.session}
+                      pageNumber={index + 1}
+                      scale={scale}
+                      estimatedSize={opened.firstPageSize}
+                      showWithoutText={showWithoutText}
+                      showTranslations={showTranslations}
+                      detectorEnabled={detector !== null}
+                      xray={xray}
+                    />
+                  </div>
+                )
+              })}
             </div>
           </div>
         </>

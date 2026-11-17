@@ -617,3 +617,18 @@ footer {
   font-family: ui-monospace, 'SF Mono', Menlo, monospace;
   font-size: 0.9em;
 }
+
+/* 原文のページと、訳文を重ねたページを、横に並べる表示。 */
+.page-row {
+  display: flex;
+  flex: none;
+  gap: 1rem;
+}
+
+/* 2 ページ分の幅が要るので、本文の幅の制限(.app)を外して、画面の幅いっぱいを使う。 */
+.pages.side-by-side {
+  width: 100vw;
+  margin-left: calc(50% - 50vw);
+  box-sizing: border-box;
+  padding: 0 1rem;
+}
