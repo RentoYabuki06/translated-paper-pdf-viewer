@@ -465,6 +465,16 @@ footer {
   justify-content: space-between;
 }
 
+.app-title h1 {
+  margin-bottom: 0.2rem;
+}
+
+.tagline {
+  margin: 0;
+  font-size: 0.9rem;
+  opacity: 0.75;
+}
+
 .badge.ok {
   border-color: light-dark(#26a269, #57e389);
   color: light-dark(#1b7a4c, #8ff0a4);

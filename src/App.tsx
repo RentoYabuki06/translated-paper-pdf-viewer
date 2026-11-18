@@ -69,7 +69,10 @@ export function App() {
 
         <main className="app">
           <header className="app-head">
-            <h1>翻訳論文 PDF ビューア</h1>
+            <div className="app-title">
+              <h1>ローカル完結の翻訳論文 PDF ビューア</h1>
+              <p className="tagline">論文を外部に送らず、自分のパソコンの中だけで翻訳します</p>
+            </div>
             <ConnectionBadge onOpen={() => setTab('server')} />
           </header>
 

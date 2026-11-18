@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 680" width="1280" height="680" font-family="'Hiragino Sans','Yu Gothic UI','Noto Sans JP',system-ui,sans-serif" role="img" aria-labelledby="t d">
-<title id="t">翻訳論文 PDF ビューアのアーキテクチャ</title>
+<title id="t">ローカル完結の翻訳論文 PDF ビューアのアーキテクチャ</title>
 <desc id="d">ブラウザの中の Web アプリが、PDF の描画、レイアウト検出、訳文の重ね表示、訳文の保存を受け持つ。翻訳は、同じパソコンの llama-server で動く PLaMo 3 Translate に依頼する。Ollama は、llama-server の代わりに使える。PDF は arXiv から取得でき、モデルは初回だけ Hugging Face から取得する。</desc>
 <defs>
 <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#64708a"/></marker>
