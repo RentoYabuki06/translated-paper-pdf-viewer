@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { buildParagraphs, joinLines } from '../../src/analysis/paragraphs.ts'
-import { line } from './helpers.ts'
+import type { Line } from '../../src/analysis/types.ts'
+import { line, run } from './helpers.ts'
+
+/** フォントの名前を持つ行を作る。 */
+function fontLine(text: string, x: number, baseline: number, width: number, fontSize: number, fontName: string): Line {
+  return { ...line(text, x, baseline, width, fontSize), runs: [run(text, x, baseline, { fontSize, fontName })] }
+}
 
 describe('buildParagraphs', () => {
   it('行間が一定の行を、1 つの段落にする', () => {
@@ -56,6 +62,32 @@ describe('buildParagraphs', () => {
       line('of the next paragraph.', 50, 136, 120),
     ])
     expect(paragraphs.map((paragraph) => paragraph.lines.length)).toEqual([2, 2])
+  })
+
+  it('1 行目だけがフォントも大きさも違うとき、見出しとして、本文の段落に入れない', () => {
+    const paragraphs = buildParagraphs([
+      fontLine('INTRODUCTION', 68, 100, 72, 10.5, 'Sans-Semibold'),
+      fontLine('Body text starts here', 50, 116, 240, 10, 'Serif'),
+      fontLine('and continues.', 50, 128, 240, 10, 'Serif'),
+    ])
+    expect(paragraphs.map((paragraph) => paragraph.lines.length)).toEqual([1, 2])
+  })
+
+  it('フォントが違っても、大きさが同じ行は、同じ段落にする', () => {
+    // 1 行がすべて斜体の場合など。
+    const paragraphs = buildParagraphs([
+      fontLine('an italic line of the text', 50, 100, 240, 10, 'Serif-Italic'),
+      fontLine('and an upright line.', 50, 112, 240, 10, 'Serif'),
+    ])
+    expect(paragraphs).toHaveLength(1)
+  })
+
+  it('大きさが少し違っても、フォントが同じ行は、同じ段落にする', () => {
+    const paragraphs = buildParagraphs([
+      fontLine('first line of the text', 50, 100, 240, 10.5, 'Serif'),
+      fontLine('and the second line.', 50, 112, 240, 10, 'Serif'),
+    ])
+    expect(paragraphs).toHaveLength(1)
   })
 
   it('中央ぞろえの行を、1 つの段落にする', () => {

@@ -56,11 +56,48 @@ export interface Assignment {
 }
 
 /**
+ * 行の範囲の合計のうち、同じ種類の領域と重なる割合を、種類ごとに求める。
+ * 1 つの領域では下限に届かない段落に使う。返すのは、割合が下限以上で最も大きい種類と、その種類で最もよく重なる領域。
+ *
+ * 文字の位置から作った 1 つの段落を、レイアウト検出が 2 つ以上の領域に分けることがある(2 段落の要旨など)。
+ * また、図の横を回り込む段落は、段落を囲む矩形が図の範囲を含むため、矩形どうしの重なりが小さく出る。
+ * どちらも、行の範囲で数えれば、同じ種類の領域の合計は下限を超える。
+ */
+function assignByLabel(lines: readonly Rect[], regions: readonly LayoutRegion[]): Assignment | undefined {
+  const total = lines.reduce((sum, line) => sum + area(line), 0)
+  if (total === 0) return undefined
+  const byLabel = new Map<LayoutLabel, { covered: number; region: LayoutRegion; regionCovered: number }>()
+  for (const region of regions) {
+    if (IGNORED_LABELS.has(region.label)) continue
+    const covered = lines.reduce((sum, line) => sum + intersectionArea(line, region), 0)
+    if (covered === 0) continue
+    const entry = byLabel.get(region.label)
+    if (!entry) byLabel.set(region.label, { covered, region, regionCovered: covered })
+    else {
+      entry.covered += covered
+      if (covered > entry.regionCovered) {
+        entry.region = region
+        entry.regionCovered = covered
+      }
+    }
+  }
+  let best: { covered: number; region: LayoutRegion } | undefined
+  for (const entry of byLabel.values()) {
+    // 領域どうしが重なっていると、合計が 1 を超えることがある。
+    const coverage = Math.min(1, entry.covered / total)
+    if (coverage >= MIN_COVERAGE && (!best || entry.covered > best.covered)) best = entry
+  }
+  return best ? { kind: best.region.label, region: best.region } : undefined
+}
+
+/**
  * 段落と最もよく重なる領域を選ぶ。
  * 同じ程度に重なる領域が複数ある場合は、小さい領域を選ぶ。
  * 図の領域の中に、図の説明文の領域が入っているような場合に、内側の種類を採るためである。
+ *
+ * どの領域も下限に届かない場合は、同じ種類の領域を合わせて、行の範囲で数え直す(assignByLabel)。
  */
-export function assignKind(paragraph: Rect, regions: readonly LayoutRegion[]): Assignment {
+export function assignKind(paragraph: Rect & { lines?: readonly Rect[] }, regions: readonly LayoutRegion[]): Assignment {
   const paragraphArea = area(paragraph)
   if (paragraphArea === 0) return { kind: 'unknown', region: undefined }
 
@@ -77,7 +114,8 @@ export function assignKind(paragraph: Rect, regions: readonly LayoutRegion[]): A
       bestCoverage = Math.max(bestCoverage, coverage)
     }
   }
-  return best ? { kind: best.label, region: best } : { kind: 'unknown', region: undefined }
+  if (best) return { kind: best.label, region: best }
+  return assignByLabel(paragraph.lines ?? [paragraph], regions) ?? { kind: 'unknown', region: undefined }
 }
 
 export function actionFor(kind: ParagraphKind): ParagraphAction {

@@ -67,6 +67,60 @@ describe('buildLines', () => {
     expect(lines).toHaveLength(2)
   })
 
+  it('段の間が狭くても、段の左端から始まるまとまりは、左の段の行につなげない', () => {
+    // 左の段の行は 50 から 290 まで。右の段は 303 から始まり、すき間は 13 ポイント(文字の大きさの 1.3 倍)。
+    const left = 'a'.repeat(48)
+    const runs = [0, 1, 2, 3, 4, 5].flatMap((row) => [run(left, 50, 100 + row * 12), run('right column', 303, 100 + row * 12)])
+    const lines = buildLines(runs)
+    expect(lines).toHaveLength(12)
+    expect(lines.filter((line) => line.text === 'right column')).toHaveLength(6)
+  })
+
+  it('段の左端から少し左へはみ出して始まるまとまりも、左の段の行につなげない', () => {
+    const left = 'a'.repeat(48)
+    const runs = [0, 1, 2, 3, 4, 5].flatMap((row) => [run(left, 50, 100 + row * 12), run('right column', 303, 100 + row * 12)])
+    // 7 行目だけ、右の段の行が 1.4 ポイント左から始まる。
+    runs.push(run(left, 50, 172), run('(hanging) line', 301.6, 172))
+    const lines = buildLines(runs)
+    expect(lines).toHaveLength(14)
+    expect(lines.some((line) => line.text === '(hanging) line')).toBe(true)
+  })
+
+  it('本文のすぐ横の、4 行の説明文も、本文の行につなげない', () => {
+    // 本文の行は 50 から 290 まで。説明文は 298 から始まり、すき間は 8 ポイント(文字の大きさの 0.8 倍)。
+    const left = 'a'.repeat(48)
+    const runs = [0, 1, 2, 3].flatMap((row) => [run(left, 50, 100 + row * 12), run('caption', 298, 100 + row * 12)])
+    expect(buildLines(runs)).toHaveLength(8)
+  })
+
+  it('段の左端から始まっていても、すき間が単語の間ほどなら、同じ行にする', () => {
+    // 箇条書きの番号と本文のように、すき間が文字の大きさの半分の場合。
+    const runs = [0, 1, 2, 3, 4].flatMap((row) => [run(`${row + 1}.`, 50, 100 + row * 12), run('item text', 65, 100 + row * 12)])
+    const lines = buildLines(runs)
+    expect(lines).toHaveLength(5)
+    expect(lines[0]?.text).toBe('1. item text')
+  })
+
+  it('同じ位置から始まるまとまりが少ないときは、これまでどおり、すき間の上限まで 1 行にする', () => {
+    const left = 'a'.repeat(48)
+    const lines = buildLines([run(left, 50, 100), run('same line', 303, 100)])
+    expect(lines).toHaveLength(1)
+  })
+
+  it('まわりより大きく離れた大きさの文字は、縦の範囲が重なっていても、別の行にする', () => {
+    // 32 ポイントの記号の縦の範囲は、見出しの行と、本文の 1 行目の両方に重なる。
+    const mark = run('■', 50, 104, { fontSize: 32 })
+    const lines = buildLines([mark, run('HEADING', 68, 96, { fontSize: 10.5 }), run('Body text of the section', 50, 110)])
+    expect(lines.map((line) => line.text).sort()).toEqual(['Body text of the section', 'HEADING', '■'])
+  })
+
+  it('大きな文字の右にある、別の段の行を巻き込まない', () => {
+    const mark = run('■', 50, 104, { fontSize: 32 })
+    const lines = buildLines([mark, run('a'.repeat(48), 50, 110), run('right column', 314, 108)])
+    expect(lines.map((line) => line.text)).toContain('right column')
+    expect(lines).toHaveLength(3)
+  })
+
   it('数式の文字が占める割合を計算する', () => {
     const lines = buildLines([run('ab', 50, 100), run('xy', 60, 100, { isMath: true })])
     expect(lines[0]?.mathRatio).toBe(0.5)

@@ -13,7 +13,8 @@ import type { LayoutLabel, LayoutRegion } from '../layout/types.ts'
 import type { GlyphInkMeasurer } from '../pdf/glyphInk.ts'
 import { buildTaggedSource } from './source.ts'
 import type { MathSlot } from './source.ts'
-import type { Paragraph, Rect } from './types.ts'
+import { unionRect } from './types.ts'
+import type { Line, Paragraph, Rect } from './types.ts'
 
 /** 翻訳単位が、ページの上で占める範囲の 1 つ。段やページをまたぐ段落は、断片を 2 つ以上持つ。 */
 export interface UnitFragment {
@@ -73,6 +74,48 @@ const SAME_COLUMN_EM = 2.5
 const COLUMN_EDGE_EM = 0.5
 /** 最後の行が段の右端まで届いているとみなす、右端との差の上限。文字の大きさに対する倍率。 */
 const FULL_LINE_EM = 2
+
+/** 行の幅が変わったとみなす、左端または右端のずれの下限。文字の大きさに対する倍率。 */
+const SHAPE_CHANGE_EM = 3
+/** 幅の変わるところで範囲を分ける段落の、行の数の下限。 */
+const SHAPE_MIN_LINES = 3
+
+/**
+ * 段落の行を、幅のそろった行のまとまりに分ける。
+ *
+ * 図の横を回り込む段落は、図の横では幅が狭く、図の下では幅が広い。
+ * 段落を囲む 1 つの矩形に訳文を置くと、訳文が図に重なる。
+ * 幅の変わるところで分けておくと、訳文は、それぞれの範囲の幅で折り返す。
+ *
+ * 右端か左端が、前のまとまりより外へ出た行で分ける。
+ * 内へ入った行は、次の行も内へ入っている場合に限って分ける。段落の最後の短い行で分けないためである。
+ */
+export function splitByShape(lines: readonly Line[], em: number): Line[][] {
+  if (lines.length < SHAPE_MIN_LINES) return [[...lines]]
+  const tolerance = SHAPE_CHANGE_EM * em
+  const groups: Line[][] = []
+  let current: Line[] = []
+  let left = Infinity
+  let rightEdge = -Infinity
+  const narrower = (line: Line | undefined) =>
+    line !== undefined && (right(line) < rightEdge - tolerance || line.x > left + tolerance)
+
+  lines.forEach((line, index) => {
+    const wider = right(line) > rightEdge + tolerance || line.x < left - tolerance
+    const split = current.length > 0 && (wider || (narrower(line) && narrower(lines[index + 1])))
+    if (split) {
+      groups.push(current)
+      current = []
+      left = Infinity
+      rightEdge = -Infinity
+    }
+    current.push(line)
+    left = Math.min(left, line.x)
+    rightEdge = Math.max(rightEdge, right(line))
+  })
+  groups.push(current)
+  return groups
+}
 
 /**
  * 節の見出しの先頭にある番号。"3"、"3.2.1"、"1."、"A."、"A.1" などの形。
@@ -162,6 +205,14 @@ export function buildUnits(
   const assignments = paragraphs.map((paragraph) => assignKind(paragraph, regions))
   const kinds = assignments.map((assignment) => assignment.kind)
   const blocks = regions.filter((region) => BLOCK_LABELS.has(region.label))
+  // 段落ごとの、行のまとまり。図の横を回り込む本文と要旨は、幅の変わるところで分ける。
+  // 題名のように、中央にそろえた行は、行ごとに左端が違うので、分けない。
+  const shapes = paragraphs.map((paragraph, index) => {
+    const kind = kinds[index] as ParagraphKind
+    return kind === 'text' || kind === 'abstract' ? splitByShape(paragraph.lines, paragraph.fontSize) : [paragraph.lines]
+  })
+  // 訳文の箱を広げるときに避ける範囲。回り込む段落は、段落を囲む矩形ではなく、分けたあとの範囲を使う。
+  const shapeRects = shapes.map((groups, index) => (groups.length === 1 ? [paragraphs[index] as Rect] : groups.map((group) => unionRect(group))))
   // 訳文の箱は、ページの中で文字が置かれている範囲の外へは広げない。
   const contentRight = Math.max(...paragraphs.map(right))
   const contentBottom = Math.max(...paragraphs.map(bottom))
@@ -177,7 +228,7 @@ export function buildUnits(
     if (!/[A-Za-z]{2}/.test(source.text.replace(/<m\d+>/g, ''))) return
 
     const others = paragraphs.map((other, otherIndex) => ({ other, otherIndex })).filter(({ otherIndex }) => otherIndex !== index)
-    const obstacles: Rect[] = [...others.map(({ other }) => other), ...blocks]
+    const obstacles: Rect[] = [...others.flatMap(({ otherIndex }) => shapeRects[otherIndex] as Rect[]), ...blocks]
 
     // 下の空き: 真下にある最も近い要素まで。
     let limitBottom = contentBottom
@@ -224,6 +275,35 @@ export function buildUnits(
         : paragraph.fontSize * DEFAULT_PITCH_EM
     const second = lines[1]
 
+    // 図の横を回り込む段落は、幅の変わるところで範囲を分ける。
+    const groups = shapes[index] as Line[][]
+    const indented = first !== undefined && second !== undefined && first.x - second.x > INDENT_EM * em
+    const fragments: UnitFragment[] =
+      groups.length === 1
+        ? [
+            {
+              pageNumber,
+              rect: { x: paragraph.x, y: paragraph.y, width: paragraph.width, height: paragraph.height },
+              lineCount: lines.length,
+              indented,
+              maxWidth: Math.max(paragraph.width, limitRight - paragraph.x),
+              maxHeight: Math.max(paragraph.height, limitBottom - paragraph.y),
+            },
+          ]
+        : groups.map((group, groupIndex) => {
+            const rect = unionRect(group)
+            const isLast = groupIndex === groups.length - 1
+            return {
+              pageNumber,
+              rect,
+              lineCount: group.length,
+              indented: groupIndex === 0 && indented,
+              maxWidth: rect.width,
+              // 途中の範囲は、すぐ下に次の範囲があるので、下へ広げない。
+              maxHeight: isLast ? Math.max(rect.height, limitBottom - rect.y) : rect.height,
+            }
+          })
+
     // 節の見出しの番号は、訳さずに、訳文の前に付け直す。
     const heading = kind === 'paragraph_title' ? splitHeadingNumber(source.text) : { prefix: '', rest: source.text }
 
@@ -239,16 +319,7 @@ export function buildUnits(
       kind,
       fontSize: paragraph.fontSize,
       linePitch,
-      fragments: [
-        {
-          pageNumber,
-          rect: { x: paragraph.x, y: paragraph.y, width: paragraph.width, height: paragraph.height },
-          lineCount: lines.length,
-          indented: first !== undefined && second !== undefined && first.x - second.x > INDENT_EM * em,
-          maxWidth: Math.max(paragraph.width, limitRight - paragraph.x),
-          maxHeight: Math.max(paragraph.height, limitBottom - paragraph.y),
-        },
-      ],
+      fragments,
       atColumnTop,
       atColumnBottom,
       lastLineFull: last !== undefined && right(last) >= columnRight - FULL_LINE_EM * em,

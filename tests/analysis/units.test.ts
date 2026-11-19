@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Paragraph } from '../../src/analysis/types.ts'
-import { buildUnits, splitHeadingNumber } from '../../src/analysis/units.ts'
+import { buildUnits, splitByShape, splitHeadingNumber } from '../../src/analysis/units.ts'
 import type { TranslationUnit } from '../../src/analysis/units.ts'
 import type { LayoutLabel, LayoutRegion } from '../../src/layout/types.ts'
 import { lineWithChars } from './helpers.ts'
@@ -196,5 +196,73 @@ describe('splitHeadingNumber', () => {
     const result = splitHeadingNumber(text)
     if (text.startsWith('2015')) expect(result).toEqual({ prefix: '2015', rest: 'in Review of 3 Models' })
     else expect(result).toEqual({ prefix: '', rest: text })
+  })
+})
+
+/** 行ごとの幅を指定して、行間 12 ポイントの段落を作る。行はすべて x から始まる。 */
+function shaped(x: number, y: number, widths: readonly number[]): Paragraph {
+  const lines = widths.map((width, index) => lineWithChars(index === 0 ? 'Body text of the paper' : '…', x, y + 8 + index * 12, width))
+  const width = Math.max(...widths)
+  return { text: 'Body text of the paper', x, y, width, height: 10 + (widths.length - 1) * 12, lines, fontSize: 10, mathRatio: 0 }
+}
+
+describe('splitByShape', () => {
+  const widthsOf = (widths: readonly number[]) => splitByShape(shaped(50, 100, widths).lines, 10).map((group) => group.length)
+
+  it('幅のそろった段落は、分けない', () => {
+    expect(widthsOf([240, 240, 240, 240])).toEqual([4])
+  })
+
+  it('最後の短い行では、分けない', () => {
+    expect(widthsOf([240, 240, 240, 90])).toEqual([4])
+  })
+
+  it('狭い行のあとに広い行が続くところで、分ける', () => {
+    expect(widthsOf([240, 240, 240, 500, 500, 500])).toEqual([3, 3])
+  })
+
+  it('広い行のあとに狭い行が 2 行以上続くところで、分ける', () => {
+    expect(widthsOf([500, 500, 240, 240, 240])).toEqual([2, 3])
+  })
+
+  it('広い行のあとの最後の 1 行が広いだけでも、分ける', () => {
+    expect(widthsOf([240, 240, 240, 500])).toEqual([3, 1])
+  })
+
+  it('行の数が少ない段落は、分けない', () => {
+    expect(widthsOf([240, 500])).toEqual([2])
+  })
+})
+
+describe('buildUnits の回り込み', () => {
+  it('図の横を回り込む本文は、幅の変わるところで範囲を分ける', () => {
+    const body = shaped(50, 100, [240, 240, 240, 500, 500])
+    const units = buildUnits(1, [body], [region('text', 48, 98, 244, 38), region('text', 48, 134, 504, 26)])
+    expect(units).toHaveLength(1)
+    const fragments = units[0]?.fragments ?? []
+    expect(fragments.map((fragment) => fragment.lineCount)).toEqual([3, 2])
+    expect(fragments.map((fragment) => fragment.rect.width)).toEqual([240, 500])
+    // 途中の範囲は、下へ広げない。
+    expect(fragments[0]?.maxHeight).toBe(fragments[0]?.rect.height)
+  })
+
+  it('回り込む本文の横にある段落の訳文は、本文の広い部分の手前までしか、下へ広げない', () => {
+    // 本文は、上の 3 行が狭く(50 から 290)、下の 2 行が広い(50 から 550)。説明文は、狭い行の右にある。
+    const body = shaped(50, 100, [240, 240, 240, 500, 500])
+    const caption = paragraph('Figure 2: A caption beside the text.', 300, 100, 250, 2)
+    const units = buildUnits(
+      1,
+      [body, caption],
+      [region('text', 48, 98, 244, 38), region('text', 48, 134, 504, 26), cover('figure_title', caption)],
+    )
+    const captionUnit = units.find((unit) => unit.kind === 'figure_title')
+    // 本文の広い部分は、上端が 136。その手前(すき間 3 ポイント)まで。
+    expect(captionUnit?.fragments[0]?.maxHeight).toBe(136 - 3 - 100)
+  })
+
+  it('題名は、行ごとに幅が違っても分けない', () => {
+    const title = shaped(50, 100, [240, 240, 240, 500, 500])
+    const units = buildUnits(1, [title], [cover('doc_title', title)])
+    expect(units[0]?.fragments).toHaveLength(1)
   })
 })

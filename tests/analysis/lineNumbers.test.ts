@@ -29,8 +29,12 @@ describe('removeLineNumbers', () => {
   })
 
   it('取り除いたあとの行には、番号が入らない', () => {
+    // 行が少ないページでは、取り除かないと、番号が本文の行の先頭に付く。
+    const few = numberedPage(3)
+    expect(buildLines(few)[0]?.text).toBe('39 body text of line 0')
+    expect(buildLines(removeLineNumbers(few))[0]?.text).toBe('body text of line 0')
+
     const runs = numberedPage(4)
-    expect(buildLines(runs)[0]?.text).toBe('39 body text of line 0')
     expect(buildLines(removeLineNumbers(runs)).map((line) => line.text)).toEqual([
       'body text of line 0',
       'body text of line 1',

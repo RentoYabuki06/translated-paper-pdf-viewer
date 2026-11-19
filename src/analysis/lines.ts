@@ -3,6 +3,11 @@
  *
  * 2 つのまとまりは、縦の範囲が重なり、横のすき間が小さいときに同じ行とする。
  * 段組の間のすき間は文字の大きさより広いため、左右の段の行は別の行になる。
+ * 段組の間が狭い PDF では、すき間が上限より小さいことがある。
+ * そのため、多くの行が始まる位置(段の左端)から始まるまとまりには、より小さい上限を使う。
+ *
+ * 見出しの飾りや、段落の先頭の大きな 1 文字のように、まわりより大きく離れた大きさの文字は、
+ * 縦の範囲が複数の行に重なる。これらは、ほかのまとまりと同じ行にしない。
  *
  * 分数の分母や根号の中身のように、行の上下に離れて置かれた数式の部品は、縦の範囲が重ならない。
  * これらは、いったん別の行になったあとで、もとの行に戻す。
@@ -16,6 +21,23 @@ import type { Line, LineChar, TextRun } from './types.ts'
 
 /** 同じ行とみなす横のすき間の上限。行の文字の大きさに対する倍率。 */
 const MAX_GAP_EM = 1.5
+/**
+ * 段の左端から始まるまとまりに使う、横のすき間の上限。行の文字の大きさに対する倍率。
+ * 単語の間の空きは、両端をそろえて広がった行でも、ふつうはこれより小さい。
+ * 本文の横に置かれた図の説明文は、本文との間が文字の大きさと同じくらいしかないことがある。
+ */
+const MAX_GAP_AT_COLUMN_EDGE_EM = 0.7
+/** 段の左端とみなす条件: 同じ位置から始まるまとまりの数の下限(基準線の違うものを数える)。 */
+const COLUMN_EDGE_MIN_RUNS = 4
+/** 同じ位置から始まるとみなす、左端の差の上限(ポイント)。 */
+const COLUMN_EDGE_TOLERANCE = 0.5
+/**
+ * 段の左端から、左へはみ出して始まるまとまりを、段の左端から始まるとみなす幅(ポイント)。
+ * 行頭の括弧や引用符を、余白の側へ少しはみ出させて組んである PDF がある。
+ */
+const COLUMN_EDGE_OVERHANG = 2.5
+/** 同じ行にしない、高さの比の下限。これ以上に高さが違うまとまりは、別の行にする。 */
+const MAX_HEIGHT_RATIO = 2.5
 /** 同じ行とみなす縦の重なりの下限。低いほうの高さに対する割合。 */
 const MIN_VERTICAL_OVERLAP = 0.5
 /** 行の縦の範囲を決めるときに、添字とみなさない文字の大きさの下限。行で最大の大きさに対する割合。 */
@@ -197,19 +219,47 @@ function finish(builder: LineBuilder): Line {
   }
 }
 
+/**
+ * 段の左端から始まるまとまりを求める。
+ * 左端がほぼ同じで、基準線の違うまとまりが一定の数以上あるとき、その位置を段の左端とみなす。
+ * runs は、左端の順に並んでいること。
+ */
+function findColumnStarts(sorted: readonly TextRun[]): Set<TextRun> {
+  const edges: number[] = []
+  let from = 0
+  while (from < sorted.length) {
+    let to = from + 1
+    while (to < sorted.length && (sorted[to] as TextRun).x - (sorted[from] as TextRun).x <= COLUMN_EDGE_TOLERANCE) to += 1
+    const group = sorted.slice(from, to)
+    const baselines = new Set(group.map((run) => Math.round(run.baseline)))
+    if (baselines.size >= COLUMN_EDGE_MIN_RUNS) edges.push((group[0] as TextRun).x)
+    from = to
+  }
+  const starts = new Set<TextRun>()
+  for (const run of sorted) {
+    if (edges.some((edge) => run.x >= edge - COLUMN_EDGE_OVERHANG && run.x <= edge + COLUMN_EDGE_TOLERANCE)) starts.add(run)
+  }
+  return starts
+}
+
 /** 行にまとめる。返す行は、上から下、左から右の順に並ぶ。回転した文字と空白だけのまとまりは除く。 */
 export function buildLines(runs: readonly TextRun[]): Line[] {
   const sorted = runs
     .filter((run) => !run.rotated && run.text.trim().length > 0 && run.height > 0)
     .sort((a, b) => a.x - b.x || a.y - b.y)
+  const columnStarts = findColumnStarts(sorted)
 
   const builders: LineBuilder[] = []
   for (const run of sorted) {
     let target: LineBuilder | undefined
     let targetOverlap = 0
+    const maxGapEm = columnStarts.has(run) ? MAX_GAP_AT_COLUMN_EDGE_EM : MAX_GAP_EM
     for (const builder of builders) {
       const gap = run.x - builder.right
-      if (gap > MAX_GAP_EM * Math.max(builder.maxFontSize, run.fontSize)) continue
+      if (gap > maxGapEm * Math.max(builder.maxFontSize, run.fontSize)) continue
+      // 高さが大きく違うまとまりは、縦の範囲が重なっていても、同じ行にしない。
+      const bandHeight = builder.bandBottom - builder.bandTop
+      if (Math.max(bandHeight, run.height) >= MAX_HEIGHT_RATIO * Math.min(bandHeight, run.height)) continue
       const overlap = verticalOverlap(run, builder)
       if (overlap >= MIN_VERTICAL_OVERLAP && overlap > targetOverlap) {
         target = builder

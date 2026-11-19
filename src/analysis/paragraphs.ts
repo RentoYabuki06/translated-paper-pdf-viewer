@@ -25,6 +25,12 @@ const INDENT_EM = 0.7
 const CENTER_EM = 0.25
 /** 真上の行とみなす横の重なりの下限。狭いほうの幅に対する割合。 */
 const MIN_HORIZONTAL_OVERLAP = 0.5
+/**
+ * 見出しとみなす、文字の大きさの差の下限(割合)。
+ * 1 行目だけがフォントも大きさも違うとき、その行は見出しとして、本文の段落に入れない。
+ * 本文とほぼ同じ大きさ(差が FONT_SIZE_TOLERANCE 以内)で、別のフォントの見出しを分けるためのもの。
+ */
+const HEADING_SIZE_DIFFERENCE = 0.02
 
 interface ParagraphBuilder {
   lines: Line[]
@@ -47,11 +53,32 @@ function isCentered(a: Line, b: Line, em: number): boolean {
   return leftDiffers && Math.abs(centerA - centerB) <= CENTER_EM * em
 }
 
+/** 行の中で、文字数が最も多いフォントの名前。フォントの名前が分からない行は、空文字列。 */
+function dominantFont(line: Line): string {
+  const counts = new Map<string, number>()
+  let best = ''
+  let bestCount = 0
+  for (const run of line.runs) {
+    const count = (counts.get(run.fontName) ?? 0) + run.text.length
+    counts.set(run.fontName, count)
+    if (count > bestCount) {
+      best = run.fontName
+      bestCount = count
+    }
+  }
+  return best
+}
+
 function continues(builder: ParagraphBuilder, line: Line): boolean {
   const last = builder.lines.at(-1) as Line
   const em = last.fontSize
 
   if (Math.abs(line.fontSize - last.fontSize) > FONT_SIZE_TOLERANCE * em) return false
+  if (builder.lines.length === 1 && Math.abs(line.fontSize - last.fontSize) > HEADING_SIZE_DIFFERENCE * em) {
+    const lastFont = dominantFont(last)
+    const lineFont = dominantFont(line)
+    if (lastFont !== '' && lineFont !== '' && lastFont !== lineFont) return false
+  }
   if (horizontalOverlap(last, line) < MIN_HORIZONTAL_OVERLAP) return false
 
   const pitch = line.baseline - last.baseline
